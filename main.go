@@ -264,7 +264,7 @@ func (m model) View() string {
 	}
 
 	headerHeight := 3
-	helpHeight := 3
+	helpHeight := 4
 	contentHeight := m.height - headerHeight - helpHeight
 
 	header := m.renderHeader()
