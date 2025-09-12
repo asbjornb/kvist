@@ -193,6 +193,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "r":
 			return m, loadRepository(".")
+		case "h":
+			m.currentMode = historyMode
+		case "F":
+			m.currentMode = filesMode
 		case " ", "enter":
 			if m.activePanel == rightTopPanel && m.currentMode == filesMode && m.status != nil && m.selectedFile < len(m.status.Files) {
 				file := m.status.Files[m.selectedFile]
@@ -272,10 +276,16 @@ func (m model) renderHeader() string {
 
 	title := titleStyle.Render("Kvist")
 	repo := ""
+	mode := ""
 	if m.repo != nil {
 		repo = fmt.Sprintf("📁 %s  🌿 %s", m.repo.Name, m.repo.CurrentBranch)
+		if m.currentMode == historyMode {
+			mode = "  [History Mode]"
+		} else {
+			mode = "  [Files Mode]"
+		}
 	}
-	repoInfo := branchStyle.Render(repo)
+	repoInfo := branchStyle.Render(repo + mode)
 
 	return lipgloss.JoinVertical(lipgloss.Top, title, repoInfo, "")
 }
@@ -448,7 +458,12 @@ func (m model) renderCommits(width, height int) string {
 		PaddingLeft(1).
 		Background(lipgloss.Color("238"))
 
-	title := titleStyle.Render("Commits")
+	title := titleStyle.Render(func() string {
+		if m.currentMode == historyMode {
+			return "History"
+		}
+		return "Commits"
+	}())
 	content := []string{title, ""}
 
 	for i, commit := range m.commits {
@@ -676,9 +691,9 @@ func (m model) renderHelp() string {
 	var help string
 	if m.width < 80 {
 		// Compact help for narrow terminals
-		help = "tab: panels • ↑↓/jk: nav • space: stage • f: fetch • p: pull • P: push • q: quit"
+		help = "tab: panels • ↑↓/jk: nav • space: stage • h: history • F: files • f: fetch • p: pull • P: push • q: quit"
 	} else {
-		help = "tab: switch panel • ↑↓/jk: navigate • space/enter: stage/checkout • f: fetch • p: pull • P: push • r: refresh • q: quit"
+		help = "tab: switch panel • ↑↓/jk: navigate • space/enter: stage/checkout • h: history mode • F: files mode • f: fetch • p: pull • P: push • r: refresh • q: quit"
 	}
 	return helpStyle.Render(help)
 }
