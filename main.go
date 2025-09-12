@@ -734,14 +734,21 @@ func (m model) renderHelp() string {
 		Foreground(lipgloss.Color("241")).
 		MarginLeft(2)
 
-	var help string
+	var helpLines []string
 	if m.width < 80 {
 		// Compact help for narrow terminals
-		help = "tab: panels • ↑↓/jk: nav • space: stage • h: history • s: files • f: fetch • p: pull • P: push • q: quit"
+		helpLines = []string{
+			"tab: panels • ↑↓/jk: nav • space: stage • h: history • s: files",
+			"f: fetch • p: pull • P: push • r: refresh • q: quit",
+		}
 	} else {
-		help = "tab: switch panel • ↑↓/jk: navigate • space/enter: stage/checkout • h: history mode • s: files mode • f: fetch • p: pull • P: push • r: refresh • q: quit"
+		helpLines = []string{
+			"tab: switch panel • ↑↓/jk: navigate • space/enter: stage/checkout",
+			"h: history mode • s: files mode • f: fetch • p: pull • P: push • r: refresh • q: quit",
+		}
 	}
-	return helpStyle.Render(help)
+	
+	return helpStyle.Render(strings.Join(helpLines, "\n"))
 }
 
 func main() {
