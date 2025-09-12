@@ -42,6 +42,9 @@ type model struct {
 	selectedBranch int
 	selectedFile   int
 	err        error
+	// Branch creation state
+	creatingBranch bool
+	branchInput    string
 }
 
 func initialModel() model {
@@ -140,6 +143,8 @@ func doBranchOperation(repoPath string, branch string, operation string) tea.Cmd
 		switch operation {
 		case "checkout":
 			err = git.CheckoutBranch(repoPath, branch)
+		case "create":
+			err = git.CreateBranch(repoPath, branch)
 		}
 		return branchOperationMsg{operation: operation, branch: branch, err: err}
 	}
@@ -148,6 +153,32 @@ func doBranchOperation(repoPath string, branch string, operation string) tea.Cmd
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Handle branch creation input
+		if m.creatingBranch {
+			switch msg.String() {
+			case "ctrl+c", "esc":
+				m.creatingBranch = false
+				m.branchInput = ""
+			case "enter":
+				if m.branchInput != "" && m.repo != nil {
+					m.creatingBranch = false
+					branchName := m.branchInput
+					m.branchInput = ""
+					return m, doBranchOperation(m.repo.Path, branchName, "create")
+				}
+			case "backspace":
+				if len(m.branchInput) > 0 {
+					m.branchInput = m.branchInput[:len(m.branchInput)-1]
+				}
+			default:
+				// Add printable characters to branch name
+				if len(msg.String()) == 1 && msg.String()[0] >= 32 && msg.String()[0] <= 126 {
+					m.branchInput += msg.String()
+				}
+			}
+			return m, nil
+		}
+		
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -205,6 +236,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentMode = historyMode
 		case "s":
 			m.currentMode = filesMode
+		case "n":
+			if m.repo != nil {
+				m.creatingBranch = true
+				m.branchInput = ""
+			}
 		case " ", "enter":
 			if m.activePanel == rightTopPanel && m.currentMode == filesMode && m.status != nil && m.selectedFile < len(m.status.Files) {
 				file := m.status.Files[m.selectedFile]
@@ -271,7 +307,32 @@ func (m model) View() string {
 	content := m.renderContent(contentHeight)
 	help := m.renderHelp()
 
-	return lipgloss.JoinVertical(lipgloss.Top, header, content, help)
+	result := lipgloss.JoinVertical(lipgloss.Top, header, content, help)
+	
+	// Show branch creation prompt overlay
+	if m.creatingBranch {
+		promptStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("170")).
+			Background(lipgloss.Color("235")).
+			Padding(1).
+			Margin(1)
+		
+		prompt := fmt.Sprintf("Create new branch: %s█", m.branchInput)
+		promptHelp := "Enter: create • Esc: cancel"
+		
+		overlay := promptStyle.Render(prompt + "\n" + promptHelp)
+		
+		// Position overlay in center
+		overlayHeight := 5
+		overlayTop := (m.height - overlayHeight) / 2
+		
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, result) +
+			lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, 
+				strings.Repeat("\n", overlayTop) + overlay)
+	}
+
+	return result
 }
 
 func (m model) renderHeader() string {
@@ -753,12 +814,12 @@ func (m model) renderHelp() string {
 		// Compact help for narrow terminals
 		helpLines = []string{
 			"tab: panels • ↑↓/jk: nav • space: stage • h: history • s: files",
-			"f: fetch • p: pull • P: push • r: refresh • q: quit",
+			"n: new branch • f: fetch • p: pull • P: push • r: refresh • q: quit",
 		}
 	} else {
 		helpLines = []string{
 			"tab: switch panel • ↑↓/jk: navigate • space/enter: stage/checkout",
-			"h: history mode • s: files mode • f: fetch • p: pull • P: push • r: refresh • q: quit",
+			"h: history mode • s: files mode • n: new branch • f: fetch • p: pull • P: push • r: refresh • q: quit",
 		}
 	}
 	
