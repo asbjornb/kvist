@@ -522,13 +522,23 @@ func (m model) renderCommits(width, height int) string {
 			style = selectedStyle
 		}
 		
+		timeStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("242"))
+		
 		hash := hashStyle.Render(commit.ShortHash)
+		relativeTime := git.FormatRelativeTime(commit.Time)
+		timeText := timeStyle.Render(relativeTime)
+		
+		// Calculate available space for subject
+		prefixLen := len(commit.ShortHash) + len(relativeTime) + 4 // spaces and separators
+		maxSubjectLen := width - prefixLen - 4
+		
 		subject := commit.Subject
-		if len(subject) > width-15 {
-			subject = subject[:width-18] + "..."
+		if len(subject) > maxSubjectLen && maxSubjectLen > 3 {
+			subject = subject[:maxSubjectLen-3] + "..."
 		}
 		
-		line := fmt.Sprintf("%s %s", hash, subject)
+		line := fmt.Sprintf("%s %s %s", hash, timeText, subject)
 		content = append(content, style.Width(width-2).Render(line))
 	}
 
@@ -705,11 +715,15 @@ func (m model) renderCommitDetails(width, height int) string {
 
 	commit := m.commits[m.selectedCommit]
 	
+	timeStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("114"))
+	
 	content := []string{
 		title,
 		"",
 		hashStyle.Render("Hash: " + commit.ShortHash),
 		authorStyle.Render("Author: " + commit.Author),
+		timeStyle.Render("Date: " + commit.Time.Format("2006-01-02 15:04:05") + " (" + git.FormatRelativeTime(commit.Time) + ")"),
 		"",
 		"Subject:",
 		lipgloss.NewStyle().PaddingLeft(2).Render(commit.Subject),

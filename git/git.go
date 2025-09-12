@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 type Repository struct {
@@ -64,12 +66,16 @@ func GetCommits(repoPath string, limit int) ([]Commit, error) {
 		}
 		parts := strings.Split(line, "\x00")
 		if len(parts) >= 6 {
+			timestamp, _ := strconv.ParseInt(parts[4], 10, 64)
+			commitTime := time.Unix(timestamp, 0)
+			
 			commits = append(commits, Commit{
 				Hash:      parts[0],
 				ShortHash: parts[1],
 				Author:    parts[2],
 				Email:     parts[3],
 				Date:      parts[4],
+				Time:      commitTime,
 				Subject:   parts[5],
 				Body:      func() string {
 					if len(parts) > 6 {
@@ -83,12 +89,58 @@ func GetCommits(repoPath string, limit int) ([]Commit, error) {
 	return commits, nil
 }
 
+func FormatRelativeTime(t time.Time) string {
+	now := time.Now()
+	diff := now.Sub(t)
+	
+	if diff < time.Minute {
+		return "just now"
+	} else if diff < time.Hour {
+		minutes := int(diff.Minutes())
+		if minutes == 1 {
+			return "1 minute ago"
+		}
+		return fmt.Sprintf("%d minutes ago", minutes)
+	} else if diff < 24*time.Hour {
+		hours := int(diff.Hours())
+		if hours == 1 {
+			return "1 hour ago"
+		}
+		return fmt.Sprintf("%d hours ago", hours)
+	} else if diff < 7*24*time.Hour {
+		days := int(diff.Hours() / 24)
+		if days == 1 {
+			return "1 day ago"
+		}
+		return fmt.Sprintf("%d days ago", days)
+	} else if diff < 30*24*time.Hour {
+		weeks := int(diff.Hours() / 24 / 7)
+		if weeks == 1 {
+			return "1 week ago"
+		}
+		return fmt.Sprintf("%d weeks ago", weeks)
+	} else if diff < 365*24*time.Hour {
+		months := int(diff.Hours() / 24 / 30)
+		if months == 1 {
+			return "1 month ago"
+		}
+		return fmt.Sprintf("%d months ago", months)
+	} else {
+		years := int(diff.Hours() / 24 / 365)
+		if years == 1 {
+			return "1 year ago"
+		}
+		return fmt.Sprintf("%d years ago", years)
+	}
+}
+
 type Commit struct {
 	Hash      string
 	ShortHash string
 	Author    string
 	Email     string
 	Date      string
+	Time      time.Time
 	Subject   string
 	Body      string
 }
