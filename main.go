@@ -71,6 +71,62 @@ func loadRepository(path string) tea.Cmd {
 	}
 }
 
+type gitOperationMsg struct {
+	operation string
+	err       error
+}
+
+func doGitOperation(repoPath string, operation string) tea.Cmd {
+	return func() tea.Msg {
+		var err error
+		switch operation {
+		case "fetch":
+			err = git.Fetch(repoPath)
+		case "pull":
+			err = git.Pull(repoPath)
+		case "push":
+			err = git.Push(repoPath)
+		}
+		return gitOperationMsg{operation: operation, err: err}
+	}
+}
+
+type fileOperationMsg struct {
+	operation string
+	path      string
+	err       error
+}
+
+func doFileOperation(repoPath string, path string, operation string) tea.Cmd {
+	return func() tea.Msg {
+		var err error
+		switch operation {
+		case "stage":
+			err = git.StageFile(repoPath, path)
+		case "unstage":
+			err = git.UnstageFile(repoPath, path)
+		}
+		return fileOperationMsg{operation: operation, path: path, err: err}
+	}
+}
+
+type branchOperationMsg struct {
+	operation string
+	branch    string
+	err       error
+}
+
+func doBranchOperation(repoPath string, branch string, operation string) tea.Cmd {
+	return func() tea.Msg {
+		var err error
+		switch operation {
+		case "checkout":
+			err = git.CheckoutBranch(repoPath, branch)
+		}
+		return branchOperationMsg{operation: operation, branch: branch, err: err}
+	}
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -109,6 +165,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.selectedFile++
 				}
 			}
+		case "f":
+			if m.repo != nil {
+				return m, doGitOperation(m.repo.Path, "fetch")
+			}
+		case "p":
+			if m.repo != nil {
+				return m, doGitOperation(m.repo.Path, "pull")
+			}
+		case "P":
+			if m.repo != nil {
+				return m, doGitOperation(m.repo.Path, "push")
+			}
+		case "r":
+			return m, loadRepository(".")
+		case " ", "enter":
+			if m.activePanel == filesPanel && m.status != nil && m.selectedFile < len(m.status.Files) {
+				file := m.status.Files[m.selectedFile]
+				if file.Staged != "" {
+					return m, doFileOperation(m.repo.Path, file.Path, "unstage")
+				} else {
+					return m, doFileOperation(m.repo.Path, file.Path, "stage")
+				}
+			} else if m.activePanel == branchPanel && m.selectedBranch < len(m.branches) {
+				branch := m.branches[m.selectedBranch]
+				if !branch.IsCurrent {
+					return m, doBranchOperation(m.repo.Path, branch.Name, "checkout")
+				}
+			}
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -122,6 +206,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.branches = msg.branches
 		m.status = msg.status
 		m.err = msg.err
+	case gitOperationMsg:
+		if msg.err == nil {
+			return m, loadRepository(".")
+		}
+	case fileOperationMsg:
+		if msg.err == nil {
+			return m, loadRepository(".")
+		}
+	case branchOperationMsg:
+		if msg.err == nil {
+			return m, loadRepository(".")
+		}
 	}
 	return m, nil
 }
@@ -377,7 +473,8 @@ func (m model) renderHelp() string {
 		Foreground(lipgloss.Color("241")).
 		MarginLeft(2)
 
-	return helpStyle.Render("tab: switch panel • ↑↓/jk: navigate • q: quit")
+	help := "tab: switch panel • ↑↓/jk: navigate • space/enter: stage/checkout • f: fetch • p: pull • P: push • r: refresh • q: quit"
+	return helpStyle.Render(help)
 }
 
 func main() {

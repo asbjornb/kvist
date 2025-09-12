@@ -216,3 +216,59 @@ func GetDiff(repoPath string, path string, staged bool) (string, error) {
 	
 	return string(output), nil
 }
+
+func Fetch(repoPath string) error {
+	cmd := exec.Command("git", "fetch")
+	cmd.Dir = repoPath
+	return cmd.Run()
+}
+
+func Pull(repoPath string) error {
+	cmd := exec.Command("git", "pull")
+	cmd.Dir = repoPath
+	return cmd.Run()
+}
+
+func Push(repoPath string) error {
+	cmd := exec.Command("git", "push")
+	cmd.Dir = repoPath
+	return cmd.Run()
+}
+
+func StageFile(repoPath string, path string) error {
+	cmd := exec.Command("git", "add", path)
+	cmd.Dir = repoPath
+	return cmd.Run()
+}
+
+func UnstageFile(repoPath string, path string) error {
+	cmd := exec.Command("git", "reset", "HEAD", path)
+	cmd.Dir = repoPath
+	return cmd.Run()
+}
+
+func CheckoutBranch(repoPath string, branch string) error {
+	cmd := exec.Command("git", "checkout", branch)
+	cmd.Dir = repoPath
+	return cmd.Run()
+}
+
+func CreateBranch(repoPath string, branch string) error {
+	cmd := exec.Command("git", "checkout", "-b", branch)
+	cmd.Dir = repoPath
+	return cmd.Run()
+}
+
+func DeleteBranch(repoPath string, branch string, force bool) error {
+	args := []string{"branch"}
+	if force {
+		args = append(args, "-D")
+	} else {
+		args = append(args, "-d")
+	}
+	args = append(args, branch)
+	
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repoPath
+	return cmd.Run()
+}
