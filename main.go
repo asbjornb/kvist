@@ -203,7 +203,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, loadRepository(".")
 		case "h":
 			m.currentMode = historyMode
-		case "F":
+		case "s":
 			m.currentMode = filesMode
 		case " ", "enter":
 			if m.activePanel == rightTopPanel && m.currentMode == filesMode && m.status != nil && m.selectedFile < len(m.status.Files) {
@@ -264,7 +264,7 @@ func (m model) View() string {
 	}
 
 	headerHeight := 3
-	helpHeight := 2
+	helpHeight := 3
 	contentHeight := m.height - headerHeight - helpHeight
 
 	header := m.renderHeader()
@@ -301,8 +301,8 @@ func (m model) renderHeader() string {
 }
 
 func (m model) renderContent(height int) string {
-	// 2x2 grid layout
-	leftWidth := m.width / 2
+	// 2x2 grid layout - give more space to right pane
+	leftWidth := m.width / 3
 	rightWidth := m.width - leftWidth
 	topHeight := height * 2 / 3
 	bottomHeight := height - topHeight
@@ -737,9 +737,9 @@ func (m model) renderHelp() string {
 	var help string
 	if m.width < 80 {
 		// Compact help for narrow terminals
-		help = "tab: panels • ↑↓/jk: nav • space: stage • h: history • F: files • f: fetch • p: pull • P: push • q: quit"
+		help = "tab: panels • ↑↓/jk: nav • space: stage • h: history • s: files • f: fetch • p: pull • P: push • q: quit"
 	} else {
-		help = "tab: switch panel • ↑↓/jk: navigate • space/enter: stage/checkout • h: history mode • F: files mode • f: fetch • p: pull • P: push • r: refresh • q: quit"
+		help = "tab: switch panel • ↑↓/jk: navigate • space/enter: stage/checkout • h: history mode • s: files mode • f: fetch • p: pull • P: push • r: refresh • q: quit"
 	}
 	return helpStyle.Render(help)
 }
