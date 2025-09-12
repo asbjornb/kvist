@@ -268,14 +268,16 @@ func (m model) renderHeader() string {
 
 func (m model) renderContent(height int) string {
 	branchWidth := m.width / 4
-	commitWidth := m.width / 2
-	filesWidth := m.width - branchWidth - commitWidth
+	commitWidth := m.width / 3
+	filesWidth := m.width / 4
+	detailWidth := m.width - branchWidth - commitWidth - filesWidth
 
 	branches := m.renderBranches(branchWidth, height)
 	commits := m.renderCommits(commitWidth, height)
 	files := m.renderFiles(filesWidth, height)
+	details := m.renderCommitDetails(detailWidth, height)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, branches, commits, files)
+	return lipgloss.JoinHorizontal(lipgloss.Top, branches, commits, files, details)
 }
 
 func (m model) renderBranches(width, height int) string {
@@ -462,6 +464,56 @@ func (m model) renderFiles(width, height int) string {
 			
 			line := fmt.Sprintf(" %s %s", status, fileName)
 			content = append(content, style.Width(width-2).Render(line))
+		}
+	}
+
+	return panelStyle.Render(strings.Join(content, "\n"))
+}
+
+func (m model) renderCommitDetails(width, height int) string {
+	panelStyle := lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("240"))
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("170"))
+
+	hashStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("214"))
+
+	authorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("242"))
+
+	title := titleStyle.Render("Details")
+
+	if len(m.commits) == 0 || m.selectedCommit >= len(m.commits) {
+		content := title + "\n\n" + "  No commit selected"
+		return panelStyle.Render(content)
+	}
+
+	commit := m.commits[m.selectedCommit]
+	
+	content := []string{
+		title,
+		"",
+		hashStyle.Render("Hash: " + commit.ShortHash),
+		authorStyle.Render("Author: " + commit.Author),
+		"",
+		"Subject:",
+		lipgloss.NewStyle().PaddingLeft(2).Render(commit.Subject),
+	}
+
+	if commit.Body != "" && strings.TrimSpace(commit.Body) != "" {
+		content = append(content, "", "Body:")
+		bodyLines := strings.Split(strings.TrimSpace(commit.Body), "\n")
+		for _, line := range bodyLines {
+			if len(content) >= height-3 {
+				break
+			}
+			content = append(content, lipgloss.NewStyle().PaddingLeft(2).Width(width-4).Render(line))
 		}
 	}
 
