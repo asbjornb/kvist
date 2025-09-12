@@ -267,17 +267,62 @@ func (m model) renderHeader() string {
 }
 
 func (m model) renderContent(height int) string {
-	branchWidth := m.width / 4
-	commitWidth := m.width / 3
-	filesWidth := m.width / 4
-	detailWidth := m.width - branchWidth - commitWidth - filesWidth
+	// Responsive layout based on terminal width
+	if m.width < 120 {
+		// Narrow layout - stack vertically or reduce panels
+		if m.width < 80 {
+			// Very narrow - show only active panel
+			switch m.activePanel {
+			case branchPanel:
+				return m.renderBranches(m.width, height)
+			case commitPanel:
+				return m.renderCommits(m.width, height)
+			case filesPanel:
+				return m.renderFiles(m.width, height)
+			default:
+				return m.renderCommits(m.width, height)
+			}
+		} else {
+			// Medium width - show two panels side by side
+			leftWidth := m.width / 2
+			rightWidth := m.width - leftWidth
+			
+			switch m.activePanel {
+			case branchPanel, commitPanel:
+				branches := m.renderBranches(leftWidth, height)
+				commits := m.renderCommits(rightWidth, height)
+				return lipgloss.JoinHorizontal(lipgloss.Top, branches, commits)
+			case filesPanel:
+				files := m.renderFiles(leftWidth, height)
+				details := m.renderCommitDetails(rightWidth, height)
+				return lipgloss.JoinHorizontal(lipgloss.Top, files, details)
+			default:
+				branches := m.renderBranches(leftWidth, height)
+				commits := m.renderCommits(rightWidth, height)
+				return lipgloss.JoinHorizontal(lipgloss.Top, branches, commits)
+			}
+		}
+	} else {
+		// Wide layout - show all four panels
+		branchWidth := max(20, m.width/5)
+		commitWidth := max(30, m.width*2/5)
+		filesWidth := max(20, m.width/5)
+		detailWidth := m.width - branchWidth - commitWidth - filesWidth
 
-	branches := m.renderBranches(branchWidth, height)
-	commits := m.renderCommits(commitWidth, height)
-	files := m.renderFiles(filesWidth, height)
-	details := m.renderCommitDetails(detailWidth, height)
+		branches := m.renderBranches(branchWidth, height)
+		commits := m.renderCommits(commitWidth, height)
+		files := m.renderFiles(filesWidth, height)
+		details := m.renderCommitDetails(detailWidth, height)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, branches, commits, files, details)
+		return lipgloss.JoinHorizontal(lipgloss.Top, branches, commits, files, details)
+	}
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func (m model) renderBranches(width, height int) string {
@@ -317,7 +362,33 @@ func (m model) renderBranches(width, height int) string {
 		if branch.IsCurrent {
 			prefix = "● "
 		}
-		line := style.Width(width - 2).Render(prefix + branch.Name)
+		
+		branchText := branch.Name
+		if branch.IsCurrent && (branch.Ahead > 0 || branch.Behind > 0) {
+			indicators := ""
+			if branch.Ahead > 0 {
+				indicators += fmt.Sprintf("↑%d", branch.Ahead)
+			}
+			if branch.Behind > 0 {
+				if indicators != "" {
+					indicators += " "
+				}
+				indicators += fmt.Sprintf("↓%d", branch.Behind)
+			}
+			if indicators != "" {
+				branchText += " " + indicators
+			}
+		}
+		
+		// Truncate if too long
+		maxLen := width - 4
+		if len(prefix + branchText) > maxLen {
+			if maxLen > 3 {
+				branchText = branchText[:maxLen-len(prefix)-3] + "..."
+			}
+		}
+		
+		line := style.Width(width - 2).Render(prefix + branchText)
 		content = append(content, line)
 	}
 
@@ -525,7 +596,13 @@ func (m model) renderHelp() string {
 		Foreground(lipgloss.Color("241")).
 		MarginLeft(2)
 
-	help := "tab: switch panel • ↑↓/jk: navigate • space/enter: stage/checkout • f: fetch • p: pull • P: push • r: refresh • q: quit"
+	var help string
+	if m.width < 80 {
+		// Compact help for narrow terminals
+		help = "tab: panels • ↑↓/jk: nav • space: stage • f: fetch • p: pull • P: push • q: quit"
+	} else {
+		help = "tab: switch panel • ↑↓/jk: navigate • space/enter: stage/checkout • f: fetch • p: pull • P: push • r: refresh • q: quit"
+	}
 	return helpStyle.Render(help)
 }
 

@@ -94,7 +94,7 @@ type Commit struct {
 }
 
 func GetBranches(repoPath string) ([]Branch, error) {
-	cmd := exec.Command("git", "branch", "-a", "--format=%(refname:short)%x00%(HEAD)")
+	cmd := exec.Command("git", "branch", "-a")
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -102,25 +102,81 @@ func GetBranches(repoPath string) ([]Branch, error) {
 	}
 
 	var branches []Branch
+	
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		parts := strings.Split(line, "\x00")
-		if len(parts) >= 2 {
-			branches = append(branches, Branch{
-				Name:      parts[0],
-				IsCurrent: parts[1] == "*",
-			})
+		
+		var isCurrent bool
+		var name string
+		
+		if strings.HasPrefix(line, "* ") {
+			isCurrent = true
+			name = strings.TrimSpace(line[2:])
+		} else {
+			isCurrent = false
+			name = strings.TrimSpace(line)
 		}
+		
+		// Skip remote tracking branches that are duplicates of local branches
+		if strings.HasPrefix(name, "remotes/origin/") {
+			remoteName := strings.TrimPrefix(name, "remotes/origin/")
+			// Check if we already have this as a local branch
+			hasLocal := false
+			for _, existing := range branches {
+				if existing.Name == remoteName {
+					hasLocal = true
+					break
+				}
+			}
+			if hasLocal {
+				continue
+			}
+			name = remoteName + " (remote)"
+		}
+		
+		var ahead, behind int
+		if isCurrent && !strings.Contains(name, "(remote)") {
+			ahead, behind = getAheadBehind(repoPath, name)
+		}
+		
+		branches = append(branches, Branch{
+			Name:      name,
+			IsCurrent: isCurrent,
+			Ahead:     ahead,
+			Behind:    behind,
+		})
 	}
 	return branches, nil
+}
+
+func getAheadBehind(repoPath string, branch string) (int, int) {
+	cmd := exec.Command("git", "rev-list", "--left-right", "--count", "origin/"+branch+"...HEAD")
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, 0
+	}
+	
+	parts := strings.Fields(strings.TrimSpace(string(output)))
+	if len(parts) >= 2 {
+		behind := 0
+		ahead := 0
+		fmt.Sscanf(parts[0], "%d", &behind)
+		fmt.Sscanf(parts[1], "%d", &ahead)
+		return ahead, behind
+	}
+	return 0, 0
 }
 
 type Branch struct {
 	Name      string
 	IsCurrent bool
+	Ahead     int
+	Behind    int
 }
 
 func GetStatus(repoPath string) (*Status, error) {
