@@ -328,3 +328,93 @@ func DeleteBranch(repoPath string, branch string, force bool) error {
 	cmd.Dir = repoPath
 	return cmd.Run()
 }
+
+func GetRemotes(repoPath string) ([]Remote, error) {
+	cmd := exec.Command("git", "remote", "-v")
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var remotes []Remote
+	remotesMap := make(map[string]*Remote)
+	
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		
+		parts := strings.Fields(line)
+		if len(parts) >= 3 {
+			name := parts[0]
+			url := parts[1]
+			direction := strings.Trim(parts[2], "()")
+			
+			if remote, exists := remotesMap[name]; exists {
+				if direction == "push" {
+					remote.PushURL = url
+				}
+			} else {
+				remote := &Remote{
+					Name: name,
+				}
+				if direction == "fetch" {
+					remote.FetchURL = url
+				} else {
+					remote.PushURL = url
+				}
+				remotesMap[name] = remote
+			}
+		}
+	}
+	
+	for _, remote := range remotesMap {
+		remotes = append(remotes, *remote)
+	}
+	
+	return remotes, nil
+}
+
+type Remote struct {
+	Name     string
+	FetchURL string
+	PushURL  string
+}
+
+func GetStashes(repoPath string) ([]Stash, error) {
+	cmd := exec.Command("git", "stash", "list", "--format=%gd%x00%gs%x00%gD")
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	var stashes []Stash
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		
+		parts := strings.Split(line, "\x00")
+		if len(parts) >= 3 {
+			stashes = append(stashes, Stash{
+				Index:   parts[0],
+				Message: parts[1],
+				Date:    parts[2],
+			})
+		}
+	}
+	
+	return stashes, nil
+}
+
+type Stash struct {
+	Index   string
+	Message string
+	Date    string
+}

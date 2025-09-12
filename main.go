@@ -34,6 +34,8 @@ type model struct {
 	commits    []git.Commit
 	branches   []git.Branch
 	status     *git.Status
+	remotes    []git.Remote
+	stashes    []git.Stash
 	activePanel panel
 	currentMode viewMode
 	selectedCommit int
@@ -58,6 +60,8 @@ type repoLoadedMsg struct {
 	commits  []git.Commit
 	branches []git.Branch
 	status   *git.Status
+	remotes  []git.Remote
+	stashes  []git.Stash
 	err      error
 }
 
@@ -71,12 +75,16 @@ func loadRepository(path string) tea.Cmd {
 		commits, _ := git.GetCommits(repo.Path, 50)
 		branches, _ := git.GetBranches(repo.Path)
 		status, _ := git.GetStatus(repo.Path)
+		remotes, _ := git.GetRemotes(repo.Path)
+		stashes, _ := git.GetStashes(repo.Path)
 		
 		return repoLoadedMsg{
 			repo:     repo,
 			commits:  commits,
 			branches: branches,
 			status:   status,
+			remotes:  remotes,
+			stashes:  stashes,
 		}
 	}
 }
@@ -223,6 +231,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.commits = msg.commits
 		m.branches = msg.branches
 		m.status = msg.status
+		m.remotes = msg.remotes
+		m.stashes = msg.stashes
 		m.err = msg.err
 	case gitOperationMsg:
 		if msg.err == nil {
@@ -409,21 +419,57 @@ func (m model) renderLeftBottom(width, height int) string {
 		Bold(true).
 		Foreground(lipgloss.Color("170"))
 
-	title := titleStyle.Render("Repository Info")
+	title := titleStyle.Render("Info")
 	content := []string{title, ""}
 
 	if m.repo != nil {
-		content = append(content, 
-			"Path: " + m.repo.Name,
-			"Branch: " + m.repo.CurrentBranch,
-		)
+		// Show remotes
+		if len(m.remotes) > 0 {
+			remoteStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+			content = append(content, remoteStyle.Render("Remotes:"))
+			for i, remote := range m.remotes {
+				if i >= 3 { // Limit to 3 remotes to save space
+					content = append(content, "  ...")
+					break
+				}
+				remoteName := fmt.Sprintf("  %s", remote.Name)
+				if len(remoteName) > width-4 {
+					remoteName = remoteName[:width-7] + "..."
+				}
+				content = append(content, remoteName)
+			}
+		}
 		
-		// Add some repository stats
-		content = append(content, "", "Stats:")
-		content = append(content, fmt.Sprintf("Commits: %d", len(m.commits)))
-		content = append(content, fmt.Sprintf("Branches: %d", len(m.branches)))
-		if m.status != nil {
-			content = append(content, fmt.Sprintf("Changed files: %d", len(m.status.Files)))
+		// Show stashes
+		if len(m.stashes) > 0 {
+			if len(m.remotes) > 0 {
+				content = append(content, "")
+			}
+			stashStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("170"))
+			content = append(content, stashStyle.Render("Stashes:"))
+			for i, stash := range m.stashes {
+				if i >= 3 { // Limit to 3 stashes to save space
+					content = append(content, "  ...")
+					break
+				}
+				stashText := fmt.Sprintf("  %s", stash.Index)
+				if len(stashText) > width-4 {
+					stashText = stashText[:width-7] + "..."
+				}
+				content = append(content, stashText)
+			}
+		}
+		
+		// Show basic stats if space allows
+		if len(content) < height-5 {
+			content = append(content, "")
+			statsStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
+			content = append(content, statsStyle.Render("Stats:"))
+			content = append(content, fmt.Sprintf("  %d commits", len(m.commits)))
+			content = append(content, fmt.Sprintf("  %d branches", len(m.branches)))
+			if m.status != nil && len(m.status.Files) > 0 {
+				content = append(content, fmt.Sprintf("  %d changes", len(m.status.Files)))
+			}
 		}
 	} else {
 		content = append(content, "No repository loaded")
