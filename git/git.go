@@ -122,3 +122,97 @@ type Branch struct {
 	Name      string
 	IsCurrent bool
 }
+
+func GetStatus(repoPath string) (*Status, error) {
+	cmd := exec.Command("git", "status", "--porcelain=v1")
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+
+	status := &Status{
+		Files: []FileStatus{},
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		if len(line) < 3 {
+			continue
+		}
+
+		x := line[0]
+		y := line[1]
+		path := strings.TrimSpace(line[3:])
+
+		var staged, unstaged string
+		
+		switch x {
+		case 'M':
+			staged = "modified"
+		case 'A':
+			staged = "added"
+		case 'D':
+			staged = "deleted"
+		case 'R':
+			staged = "renamed"
+		case ' ', '?':
+			staged = ""
+		default:
+			staged = "modified"
+		}
+
+		switch y {
+		case 'M':
+			unstaged = "modified"
+		case 'D':
+			unstaged = "deleted"
+		case '?':
+			unstaged = "untracked"
+		case ' ':
+			unstaged = ""
+		default:
+			unstaged = "modified"
+		}
+
+		status.Files = append(status.Files, FileStatus{
+			Path:     path,
+			Staged:   staged,
+			Unstaged: unstaged,
+		})
+	}
+
+	return status, nil
+}
+
+type Status struct {
+	Files []FileStatus
+}
+
+type FileStatus struct {
+	Path     string
+	Staged   string
+	Unstaged string
+}
+
+func GetDiff(repoPath string, path string, staged bool) (string, error) {
+	args := []string{"diff"}
+	if staged {
+		args = append(args, "--cached")
+	}
+	if path != "" {
+		args = append(args, "--", path)
+	}
+	
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	
+	return string(output), nil
+}

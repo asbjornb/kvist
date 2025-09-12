@@ -25,9 +25,11 @@ type model struct {
 	repo       *git.Repository
 	commits    []git.Commit
 	branches   []git.Branch
+	status     *git.Status
 	activePanel panel
 	selectedCommit int
 	selectedBranch int
+	selectedFile   int
 	err        error
 }
 
@@ -45,6 +47,7 @@ type repoLoadedMsg struct {
 	repo     *git.Repository
 	commits  []git.Commit
 	branches []git.Branch
+	status   *git.Status
 	err      error
 }
 
@@ -57,11 +60,13 @@ func loadRepository(path string) tea.Cmd {
 		
 		commits, _ := git.GetCommits(repo.Path, 50)
 		branches, _ := git.GetBranches(repo.Path)
+		status, _ := git.GetStatus(repo.Path)
 		
 		return repoLoadedMsg{
 			repo:     repo,
 			commits:  commits,
 			branches: branches,
+			status:   status,
 		}
 	}
 }
@@ -84,6 +89,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.selectedBranch > 0 {
 					m.selectedBranch--
 				}
+			case filesPanel:
+				if m.selectedFile > 0 {
+					m.selectedFile--
+				}
 			}
 		case "down", "j":
 			switch m.activePanel {
@@ -94,6 +103,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case branchPanel:
 				if m.selectedBranch < len(m.branches)-1 {
 					m.selectedBranch++
+				}
+			case filesPanel:
+				if m.status != nil && m.selectedFile < len(m.status.Files)-1 {
+					m.selectedFile++
 				}
 			}
 		}
@@ -107,6 +120,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.repo = msg.repo
 		m.commits = msg.commits
 		m.branches = msg.branches
+		m.status = msg.status
 		m.err = msg.err
 	}
 	return m, nil
@@ -280,10 +294,82 @@ func (m model) renderFiles(width, height int) string {
 		Bold(true).
 		Foreground(lipgloss.Color("170"))
 
-	title := titleStyle.Render("Files")
-	content := title + "\n\n" + "  (No file selected)"
+	itemStyle := lipgloss.NewStyle().
+		PaddingLeft(1)
 
-	return panelStyle.Render(content)
+	selectedStyle := lipgloss.NewStyle().
+		PaddingLeft(1).
+		Background(lipgloss.Color("238"))
+
+	stagedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("42"))
+
+	unstagedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("214"))
+
+	untrackedStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("241"))
+
+	title := titleStyle.Render("Files")
+	content := []string{title, ""}
+
+	if m.status == nil || len(m.status.Files) == 0 {
+		content = append(content, "  No changes")
+	} else {
+		for i, file := range m.status.Files {
+			if i >= height-3 {
+				break
+			}
+
+			style := itemStyle
+			if m.activePanel == filesPanel && i == m.selectedFile {
+				style = selectedStyle
+			}
+
+			var statusChar string
+			var statusStyle lipgloss.Style
+			
+			if file.Staged != "" {
+				switch file.Staged {
+				case "added":
+					statusChar = "A"
+					statusStyle = stagedStyle
+				case "modified":
+					statusChar = "M"
+					statusStyle = stagedStyle
+				case "deleted":
+					statusChar = "D"
+					statusStyle = stagedStyle
+				case "renamed":
+					statusChar = "R"
+					statusStyle = stagedStyle
+				}
+			} else if file.Unstaged != "" {
+				switch file.Unstaged {
+				case "modified":
+					statusChar = "M"
+					statusStyle = unstagedStyle
+				case "deleted":
+					statusChar = "D"
+					statusStyle = unstagedStyle
+				case "untracked":
+					statusChar = "?"
+					statusStyle = untrackedStyle
+				}
+			}
+
+			status := statusStyle.Render(statusChar)
+			fileName := file.Path
+			if len(fileName) > width-8 {
+				fileName = "..." + fileName[len(fileName)-(width-11):]
+			}
+			
+			line := fmt.Sprintf(" %s %s", status, fileName)
+			content = append(content, style.Width(width-2).Render(line))
+		}
+	}
+
+	return panelStyle.Render(strings.Join(content, "\n"))
 }
 
 func (m model) renderHelp() string {
