@@ -40,9 +40,11 @@ type model struct {
 	selectedBranch int
 	selectedFile   int
 	err        error
-	// Branch creation state
-	creatingBranch bool
-	branchInput    string
+	// Branch operations state
+	showingBranchMenu bool
+	creatingBranch    bool
+	branchInput       string
+	selectedBranchMenu int
 }
 
 func initialModel() model {
@@ -151,6 +153,42 @@ func doBranchOperation(repoPath string, branch string, operation string) tea.Cmd
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// Handle branch operations
+		if m.showingBranchMenu {
+			switch msg.String() {
+			case "ctrl+c", "esc":
+				m.showingBranchMenu = false
+				m.selectedBranchMenu = 0
+			case "up", "k":
+				if m.selectedBranchMenu > 0 {
+					m.selectedBranchMenu--
+				}
+			case "down", "j":
+				maxOptions := len(m.branches) + 1 // +1 for "Create new branch" option
+				if m.selectedBranchMenu < maxOptions-1 {
+					m.selectedBranchMenu++
+				}
+			case "enter":
+				if m.selectedBranchMenu == 0 {
+					// Create new branch option
+					m.showingBranchMenu = false
+					m.creatingBranch = true
+					m.branchInput = ""
+				} else {
+					// Switch to selected branch
+					branchIndex := m.selectedBranchMenu - 1
+					if branchIndex < len(m.branches) {
+						branch := m.branches[branchIndex]
+						if !branch.IsCurrent && m.repo != nil {
+							m.showingBranchMenu = false
+							return m, doBranchOperation(m.repo.Path, branch.Name, "checkout")
+						}
+					}
+				}
+			}
+			return m, nil
+		}
+
 		// Handle branch creation input
 		if m.creatingBranch {
 			switch msg.String() {
@@ -226,10 +264,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.currentMode = historyMode
 		case "s":
 			m.currentMode = filesMode
-		case "n":
+		case "b":
 			if m.repo != nil {
-				m.creatingBranch = true
-				m.branchInput = ""
+				m.showingBranchMenu = true
+				m.selectedBranchMenu = 0
 			}
 		case " ", "enter":
 			if m.activePanel == topPanel && m.currentMode == filesMode && m.status != nil && m.selectedFile < len(m.status.Files) {
@@ -293,7 +331,12 @@ func (m model) View() string {
 	help := m.renderHelp()
 
 	result := lipgloss.JoinVertical(lipgloss.Top, header, content, help)
-	
+
+	// Show branch menu overlay
+	if m.showingBranchMenu {
+		return m.renderBranchMenuOverlay(result)
+	}
+
 	// Show branch creation prompt overlay
 	if m.creatingBranch {
 		promptStyle := lipgloss.NewStyle().
@@ -320,6 +363,92 @@ func (m model) View() string {
 	return result
 }
 
+func (m model) renderBranchMenuOverlay(background string) string {
+	menuStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("170")).
+		Background(lipgloss.Color("235")).
+		Padding(1).
+		Width(60).
+		Height(min(len(m.branches)+8, m.height-4))
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("170")).
+		Align(lipgloss.Center)
+
+	itemStyle := lipgloss.NewStyle().
+		PaddingLeft(2)
+
+	selectedStyle := lipgloss.NewStyle().
+		PaddingLeft(1).
+		Background(lipgloss.Color("238")).
+		Foreground(lipgloss.Color("170")).
+		Bold(true)
+
+	currentStyle := lipgloss.NewStyle().
+		PaddingLeft(2).
+		Foreground(lipgloss.Color("214"))
+
+	title := titleStyle.Render("Branch Operations")
+	content := []string{title, ""}
+
+	// Add "Create new branch" option
+	createStyle := itemStyle
+	if m.selectedBranchMenu == 0 {
+		createStyle = selectedStyle
+	}
+	content = append(content, createStyle.Render("✨ Create new branch"))
+	content = append(content, "")
+
+	// Add existing branches
+	for i, branch := range m.branches {
+		menuIndex := i + 1
+		style := itemStyle
+		if m.selectedBranchMenu == menuIndex {
+			style = selectedStyle
+		}
+
+		prefix := "  "
+		branchName := branch.Name
+		if branch.IsCurrent {
+			style = currentStyle
+			prefix = "● "
+			branchName += " (current)"
+		}
+
+		// Add ahead/behind indicators
+		if branch.IsCurrent && (branch.Ahead > 0 || branch.Behind > 0) {
+			indicators := ""
+			if branch.Ahead > 0 {
+				indicators += fmt.Sprintf(" ↑%d", branch.Ahead)
+			}
+			if branch.Behind > 0 {
+				indicators += fmt.Sprintf(" ↓%d", branch.Behind)
+			}
+			branchName += indicators
+		}
+
+		content = append(content, style.Render(prefix+branchName))
+	}
+
+	content = append(content, "", "↑↓/jk: navigate • Enter: select • Esc: cancel")
+
+	menu := menuStyle.Render(strings.Join(content, "\n"))
+
+	// Center the menu
+	menuTop := (m.height - lipgloss.Height(menu)) / 2
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top,
+		background+strings.Repeat("\n", menuTop)+menu)
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 func (m model) renderHeader() string {
 	titleStyle := lipgloss.NewStyle().
 		Bold(true).
@@ -334,7 +463,29 @@ func (m model) renderHeader() string {
 	repo := ""
 	mode := ""
 	if m.repo != nil {
-		repo = fmt.Sprintf("📁 %s  🌿 %s", m.repo.Name, m.repo.CurrentBranch)
+		branchName := m.repo.CurrentBranch
+
+		// Add ahead/behind indicators if available
+		for _, branch := range m.branches {
+			if branch.IsCurrent && (branch.Ahead > 0 || branch.Behind > 0) {
+				indicators := ""
+				if branch.Ahead > 0 {
+					indicators += fmt.Sprintf("↑%d", branch.Ahead)
+				}
+				if branch.Behind > 0 {
+					if indicators != "" {
+						indicators += " "
+					}
+					indicators += fmt.Sprintf("↓%d", branch.Behind)
+				}
+				if indicators != "" {
+					branchName += " " + indicators
+				}
+				break
+			}
+		}
+
+		repo = fmt.Sprintf("📁 %s  🌿 %s", m.repo.Name, branchName)
 		if m.currentMode == historyMode {
 			mode = "  [History Mode]"
 		} else {
@@ -647,12 +798,12 @@ func (m model) renderHelp() string {
 		// Compact help for narrow terminals
 		helpLines = []string{
 			"tab: panels • ↑↓/jk: nav • space: stage • h: history • s: files",
-			"n: new branch • f: fetch • p: pull • P: push • r: refresh • q: quit",
+			"b: branches • f: fetch • p: pull • P: push • r: refresh • q: quit",
 		}
 	} else {
 		helpLines = []string{
 			"tab: switch panel • ↑↓/jk: navigate • space/enter: stage/checkout",
-			"h: history mode • s: files mode • n: new branch • f: fetch • p: pull • P: push • r: refresh • q: quit",
+			"h: history mode • s: files mode • b: branches • f: fetch • p: pull • P: push • r: refresh • q: quit",
 		}
 	}
 	
