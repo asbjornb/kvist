@@ -50,7 +50,7 @@ type model struct {
 func initialModel() model {
 	return model{
 		activePanel: rightTopPanel,
-		currentMode: historyMode,
+		currentMode: filesMode,
 	}
 }
 
