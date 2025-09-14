@@ -13,10 +13,8 @@ import (
 type panel int
 
 const (
-	leftTopPanel panel = iota    // branches
-	leftBottomPanel             // remotes/stash/repo info  
-	rightTopPanel               // commits or files (based on mode)
-	rightBottomPanel            // details/diff
+	topPanel panel = iota    // commits or files (based on mode)
+	bottomPanel             // details/diff
 )
 
 type viewMode int
@@ -49,7 +47,7 @@ type model struct {
 
 func initialModel() model {
 	return model{
-		activePanel: rightTopPanel,
+		activePanel: topPanel,
 		currentMode: filesMode,
 	}
 }
@@ -183,10 +181,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 		case "tab":
-			m.activePanel = (m.activePanel + 1) % 4
+			m.activePanel = (m.activePanel + 1) % 2
 		case "up", "k":
 			switch m.activePanel {
-			case rightTopPanel:
+			case topPanel:
 				if m.currentMode == historyMode {
 					if m.selectedCommit > 0 {
 						m.selectedCommit--
@@ -196,14 +194,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.selectedFile--
 					}
 				}
-			case leftTopPanel:
-				if m.selectedBranch > 0 {
-					m.selectedBranch--
-				}
 			}
 		case "down", "j":
 			switch m.activePanel {
-			case rightTopPanel:
+			case topPanel:
 				if m.currentMode == historyMode {
 					if m.selectedCommit < len(m.commits)-1 {
 						m.selectedCommit++
@@ -212,10 +206,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if m.status != nil && m.selectedFile < len(m.status.Files)-1 {
 						m.selectedFile++
 					}
-				}
-			case leftTopPanel:
-				if m.selectedBranch < len(m.branches)-1 {
-					m.selectedBranch++
 				}
 			}
 		case "f":
@@ -242,17 +232,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.branchInput = ""
 			}
 		case " ", "enter":
-			if m.activePanel == rightTopPanel && m.currentMode == filesMode && m.status != nil && m.selectedFile < len(m.status.Files) {
+			if m.activePanel == topPanel && m.currentMode == filesMode && m.status != nil && m.selectedFile < len(m.status.Files) {
 				file := m.status.Files[m.selectedFile]
 				if file.Staged != "" {
 					return m, doFileOperation(m.repo.Path, file.Path, "unstage")
 				} else {
 					return m, doFileOperation(m.repo.Path, file.Path, "stage")
-				}
-			} else if m.activePanel == leftTopPanel && m.selectedBranch < len(m.branches) {
-				branch := m.branches[m.selectedBranch]
-				if !branch.IsCurrent {
-					return m, doBranchOperation(m.repo.Path, branch.Name, "checkout")
 				}
 			}
 		}
@@ -362,29 +347,21 @@ func (m model) renderHeader() string {
 }
 
 func (m model) renderContent(height int) string {
-	// 2x2 grid layout - give more space to right pane
-	leftWidth := m.width / 3
-	rightWidth := m.width - leftWidth
+	// Simple two-panel vertical layout
 	topHeight := height * 2 / 3
 	bottomHeight := height - topHeight
 
-	// Left column
-	leftTop := m.renderLeftTop(leftWidth, topHeight)
-	leftBottom := m.renderLeftBottom(leftWidth, bottomHeight)
-	leftColumn := lipgloss.JoinVertical(lipgloss.Top, leftTop, leftBottom)
-
-	// Right column - content depends on current mode
-	var rightTop, rightBottom string
+	// Content depends on current mode
+	var top, bottom string
 	if m.currentMode == historyMode {
-		rightTop = m.renderCommits(rightWidth, topHeight)
-		rightBottom = m.renderCommitDetails(rightWidth, bottomHeight)
+		top = m.renderCommits(m.width, topHeight)
+		bottom = m.renderCommitDetails(m.width, bottomHeight)
 	} else { // filesMode
-		rightTop = m.renderFiles(rightWidth, topHeight)
-		rightBottom = m.renderFileDiff(rightWidth, bottomHeight)
+		top = m.renderFiles(m.width, topHeight)
+		bottom = m.renderFileDiff(m.width, bottomHeight)
 	}
-	rightColumn := lipgloss.JoinVertical(lipgloss.Top, rightTop, rightBottom)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, leftColumn, rightColumn)
+	return lipgloss.JoinVertical(lipgloss.Top, top, bottom)
 }
 
 func max(a, b int) int {
@@ -394,150 +371,6 @@ func max(a, b int) int {
 	return b
 }
 
-func (m model) renderLeftTop(width, height int) string {
-	panelStyle := lipgloss.NewStyle().
-		Width(width).
-		Height(height).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(func() string {
-			if m.activePanel == leftTopPanel {
-				return "170"
-			}
-			return "240"
-		}()))
-
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("170"))
-
-	itemStyle := lipgloss.NewStyle().
-		PaddingLeft(1)
-
-	selectedStyle := lipgloss.NewStyle().
-		PaddingLeft(1).
-		Background(lipgloss.Color("238")).
-		Foreground(lipgloss.Color("170"))
-
-	title := titleStyle.Render("Branches")
-	content := []string{title, ""}
-
-	for i, branch := range m.branches {
-		style := itemStyle
-		if m.activePanel == leftTopPanel && i == m.selectedBranch {
-			style = selectedStyle
-		}
-		
-		prefix := "  "
-		if branch.IsCurrent {
-			prefix = "● "
-		}
-		
-		branchText := branch.Name
-		if branch.IsCurrent && (branch.Ahead > 0 || branch.Behind > 0) {
-			indicators := ""
-			if branch.Ahead > 0 {
-				indicators += fmt.Sprintf("↑%d", branch.Ahead)
-			}
-			if branch.Behind > 0 {
-				if indicators != "" {
-					indicators += " "
-				}
-				indicators += fmt.Sprintf("↓%d", branch.Behind)
-			}
-			if indicators != "" {
-				branchText += " " + indicators
-			}
-		}
-		
-		// Truncate if too long
-		maxLen := width - 4
-		if len(prefix + branchText) > maxLen {
-			if maxLen > 3 {
-				branchText = branchText[:maxLen-len(prefix)-3] + "..."
-			}
-		}
-		
-		line := style.Width(width - 2).Render(prefix + branchText)
-		content = append(content, line)
-	}
-
-	return panelStyle.Render(strings.Join(content, "\n"))
-}
-
-func (m model) renderLeftBottom(width, height int) string {
-	panelStyle := lipgloss.NewStyle().
-		Width(width).
-		Height(height).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color(func() string {
-			if m.activePanel == leftBottomPanel {
-				return "170"
-			}
-			return "240"
-		}()))
-
-	titleStyle := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.Color("170"))
-
-	title := titleStyle.Render("Info")
-	content := []string{title, ""}
-
-	if m.repo != nil {
-		// Show remotes
-		if len(m.remotes) > 0 {
-			remoteStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-			content = append(content, remoteStyle.Render("Remotes:"))
-			for i, remote := range m.remotes {
-				if i >= 3 { // Limit to 3 remotes to save space
-					content = append(content, "  ...")
-					break
-				}
-				remoteName := fmt.Sprintf("  %s", remote.Name)
-				if len(remoteName) > width-4 {
-					remoteName = remoteName[:width-7] + "..."
-				}
-				content = append(content, remoteName)
-			}
-		}
-		
-		// Show stashes
-		if len(m.stashes) > 0 {
-			if len(m.remotes) > 0 {
-				content = append(content, "")
-			}
-			stashStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("170"))
-			content = append(content, stashStyle.Render("Stashes:"))
-			for i, stash := range m.stashes {
-				if i >= 3 { // Limit to 3 stashes to save space
-					content = append(content, "  ...")
-					break
-				}
-				stashText := fmt.Sprintf("  %s", stash.Index)
-				if len(stashText) > width-4 {
-					stashText = stashText[:width-7] + "..."
-				}
-				content = append(content, stashText)
-			}
-		}
-		
-		// Show basic stats if space allows
-		if len(content) < height-5 {
-			content = append(content, "")
-			statsStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("242"))
-			content = append(content, statsStyle.Render("Stats:"))
-			content = append(content, fmt.Sprintf("  %d commits", len(m.commits)))
-			content = append(content, fmt.Sprintf("  %d branches", len(m.branches)))
-			if m.status != nil && len(m.status.Files) > 0 {
-				content = append(content, fmt.Sprintf("  %d changes", len(m.status.Files)))
-			}
-		}
-	} else {
-		content = append(content, "No repository loaded")
-	}
-
-	return panelStyle.Render(strings.Join(content, "\n"))
-}
 
 func (m model) renderCommits(width, height int) string {
 	panelStyle := lipgloss.NewStyle().
@@ -545,7 +378,7 @@ func (m model) renderCommits(width, height int) string {
 		Height(height).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(func() string {
-			if m.activePanel == rightTopPanel {
+			if m.activePanel == topPanel {
 				return "170"
 			}
 			return "240"
@@ -579,7 +412,7 @@ func (m model) renderCommits(width, height int) string {
 		}
 		
 		style := itemStyle
-		if m.activePanel == rightTopPanel && i == m.selectedCommit {
+		if m.activePanel == topPanel && i == m.selectedCommit {
 			style = selectedStyle
 		}
 		
@@ -612,7 +445,7 @@ func (m model) renderFiles(width, height int) string {
 		Height(height).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(func() string {
-			if m.activePanel == rightTopPanel && m.currentMode == filesMode {
+			if m.activePanel == topPanel && m.currentMode == filesMode {
 				return "170"
 			}
 			return "240"
@@ -650,7 +483,7 @@ func (m model) renderFiles(width, height int) string {
 			}
 
 			style := itemStyle
-			if m.activePanel == rightTopPanel && m.currentMode == filesMode && i == m.selectedFile {
+			if m.activePanel == topPanel && m.currentMode == filesMode && i == m.selectedFile {
 				style = selectedStyle
 			}
 
@@ -706,7 +539,7 @@ func (m model) renderFileDiff(width, height int) string {
 		Height(height).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(func() string {
-			if m.activePanel == rightBottomPanel {
+			if m.activePanel == bottomPanel {
 				return "170"
 			}
 			return "240"
@@ -751,7 +584,7 @@ func (m model) renderCommitDetails(width, height int) string {
 		Height(height).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(func() string {
-			if m.activePanel == rightBottomPanel {
+			if m.activePanel == bottomPanel {
 				return "170"
 			}
 			return "240"
