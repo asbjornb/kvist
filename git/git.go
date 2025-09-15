@@ -53,41 +53,40 @@ func getCurrentBranch(repoPath string) (string, error) {
 }
 
 func GetCommits(repoPath string, limit int) ([]Commit, error) {
-	format := "%H%x00%h%x00%an%x00%ae%x00%at%x00%s%x00%b%x00"
-	cmd := exec.Command("git", "log", fmt.Sprintf("--max-count=%d", limit), "--format="+format)
+	// %x1e = RS between commits, %x00 between fields
+	const logFmt = "%H%x00%h%x00%an%x00%ae%x00%at%x00%s%x00%b%x00%x1e"
+
+	cmd := exec.Command("git", "log", fmt.Sprintf("--max-count=%d", limit), "--format="+logFmt)
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
 
-	var commits []Commit
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		if line == "" {
+	out := string(output)
+	recs := strings.Split(strings.TrimSuffix(out, "\x1e"), "\x1e")
+	commits := make([]Commit, 0, len(recs))
+
+	for _, r := range recs {
+		if r == "" {
 			continue
 		}
-		parts := strings.Split(line, "\x00")
-		if len(parts) >= 6 {
-			timestamp, _ := strconv.ParseInt(parts[4], 10, 64)
-			commitTime := time.Unix(timestamp, 0)
-			
-			commits = append(commits, Commit{
-				Hash:      parts[0],
-				ShortHash: parts[1],
-				Author:    parts[2],
-				Email:     parts[3],
-				Date:      parts[4],
-				Time:      commitTime,
-				Subject:   parts[5],
-				Body:      func() string {
-					if len(parts) > 6 {
-						return parts[6]
-					}
-					return ""
-				}(),
-			})
+		p := strings.Split(r, "\x00")
+		if len(p) < 6 {
+			continue
 		}
+
+		ts, _ := strconv.ParseInt(p[4], 10, 64)
+		commits = append(commits, Commit{
+			Hash:      p[0],
+			ShortHash: p[1],
+			Author:    p[2],
+			Email:     p[3],
+			Date:      p[4],
+			Time:      time.Unix(ts, 0),
+			Subject:   p[5],
+			Body:      strings.Join(p[6:], "\x00"), // body itself may have \x00 if you ever add more fields; safe join
+		})
 	}
 	return commits, nil
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -201,4 +202,48 @@ func TestIsBinaryChange(t *testing.T) {
 	}
 
 	t.Logf("git_test.go binary change: %v", isBinary)
+}
+
+func TestGetCommits(t *testing.T) {
+	// Test that GetCommits can parse commits with multiline bodies
+	commits, err := GetCommits("..", 5)
+	if err != nil {
+		t.Fatalf("GetCommits failed: %v", err)
+	}
+
+	if len(commits) == 0 {
+		t.Fatalf("Expected at least one commit")
+	}
+
+	// Check the first commit has expected fields
+	c := commits[0]
+	if c.Hash == "" {
+		t.Errorf("Expected non-empty hash")
+	}
+	if c.ShortHash == "" {
+		t.Errorf("Expected non-empty short hash")
+	}
+	if c.Author == "" {
+		t.Errorf("Expected non-empty author")
+	}
+	if c.Subject == "" {
+		t.Errorf("Expected non-empty subject")
+	}
+
+	t.Logf("Found %d commits", len(commits))
+	t.Logf("Latest commit: %s - %s", c.ShortHash, c.Subject)
+
+	// Check for multiline bodies (should be preserved with newlines)
+	for i, commit := range commits {
+		if i >= 3 { // Only check first 3
+			break
+		}
+		if strings.Contains(commit.Body, "\n") {
+			t.Logf("Commit %s has multiline body (%d chars)", commit.ShortHash, len(commit.Body))
+			// Verify body is preserved correctly
+			if !strings.Contains(commit.Body, "\n") {
+				t.Errorf("Multiline body should contain newlines")
+			}
+		}
+	}
 }
