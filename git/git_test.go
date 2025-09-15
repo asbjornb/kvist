@@ -247,3 +247,83 @@ func TestGetCommits(t *testing.T) {
 		}
 	}
 }
+
+func TestUntrackedIsBinary(t *testing.T) {
+	// Create a temporary directory for test files
+	tempDir, err := os.MkdirTemp("", "kvist_test_untracked")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create a text file
+	textFile := filepath.Join(tempDir, "test.txt")
+	err = os.WriteFile(textFile, []byte("Hello, world!\nThis is a text file.\n"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create text file: %v", err)
+	}
+
+	// Test text file
+	isBinary, err := UntrackedIsBinary(tempDir, "test.txt")
+	if err != nil {
+		t.Fatalf("UntrackedIsBinary failed for text file: %v", err)
+	}
+	if isBinary {
+		t.Errorf("Text file should not be detected as binary")
+	}
+
+	// Create a binary file
+	binaryFile := filepath.Join(tempDir, "test.bin")
+	binaryData := []byte{0x00, 0x01, 0x02, 0x03, 0xFF, 0xFE, 0x00, 0x00, 0x48, 0x65, 0x6C, 0x6C, 0x6F}
+	err = os.WriteFile(binaryFile, binaryData, 0644)
+	if err != nil {
+		t.Fatalf("Failed to create binary file: %v", err)
+	}
+
+	// Test binary file
+	isBinary, err = UntrackedIsBinary(tempDir, "test.bin")
+	if err != nil {
+		t.Fatalf("UntrackedIsBinary failed for binary file: %v", err)
+	}
+	if !isBinary {
+		t.Errorf("Binary file should be detected as binary")
+	}
+
+	t.Logf("Text file binary: %v, Binary file binary: %v", false, true)
+}
+
+func TestUntrackedPatch(t *testing.T) {
+	// Create a temporary directory for test files
+	tempDir, err := os.MkdirTemp("", "kvist_test_patch")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create a text file
+	textFile := filepath.Join(tempDir, "test.txt")
+	content := "Hello, world!\nThis is a test file.\nWith multiple lines.\n"
+	err = os.WriteFile(textFile, []byte(content), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create text file: %v", err)
+	}
+
+	// Test patch generation
+	patch, err := UntrackedPatch(tempDir, "test.txt")
+	if err != nil {
+		t.Fatalf("UntrackedPatch failed: %v", err)
+	}
+
+	// Check that patch contains expected elements
+	if !strings.Contains(patch, "--- /dev/null") {
+		t.Errorf("Patch should contain '--- /dev/null'")
+	}
+	if !strings.Contains(patch, "+++ ") {
+		t.Errorf("Patch should contain '+++'")
+	}
+	if !strings.Contains(patch, "+Hello, world!") {
+		t.Errorf("Patch should contain the file content with + prefix")
+	}
+
+	t.Logf("Generated patch length: %d chars", len(patch))
+}

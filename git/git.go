@@ -382,7 +382,7 @@ type FileStatus struct {
 }
 
 func GetDiff(repoPath string, path string, staged bool) (string, error) {
-	args := []string{"diff"}
+	args := []string{"-c", "color.ui=false", "diff", "--no-ext-diff", "-U3"}
 	if staged {
 		args = append(args, "--cached")
 	}
@@ -390,14 +390,7 @@ func GetDiff(repoPath string, path string, staged bool) (string, error) {
 		args = append(args, "--", path)
 	}
 
-	cmd := exec.Command("git", args...)
-	cmd.Dir = repoPath
-	output, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-
-	return string(output), nil
+	return run(repoPath, args...)
 }
 
 type Numstat struct {
@@ -522,6 +515,63 @@ func Push(repoPath string) error {
 	cmd := exec.Command("git", "push")
 	cmd.Dir = repoPath
 	return cmd.Run()
+}
+
+// run executes a git command and returns the output
+func run(repoPath string, args ...string) (string, error) {
+	cmd := exec.Command("git", args...)
+	if repoPath != "" {
+		cmd.Dir = repoPath
+	}
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return string(output), nil
+}
+
+// UntrackedIsBinary detects if an untracked file is binary using git diff --numstat
+func UntrackedIsBinary(repoPath, rel string) (bool, error) {
+	abs := filepath.Join(repoPath, rel)
+
+	cmd := exec.Command("git", "diff", "--numstat", "--no-textconv", "--no-index", "--", "/dev/null", abs)
+	output, err := cmd.Output()
+	// git diff exits with code 1 when there are differences, which is expected
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			// Exit code 1 is expected for git diff when files differ
+		} else {
+			return false, err
+		}
+	}
+
+	out := string(output)
+	// lines look like "-\t-\t/path" for binary
+	for _, ln := range strings.Split(strings.TrimSpace(out), "\n") {
+		f := strings.Split(ln, "\t")
+		if len(f) >= 2 {
+			return f[0] == "-" && f[1] == "-", nil
+		}
+	}
+	return false, nil
+}
+
+// UntrackedPatch generates a patch for an untracked file using git diff --no-index
+func UntrackedPatch(repoPath, rel string) (string, error) {
+	abs := filepath.Join(repoPath, rel)
+
+	cmd := exec.Command("git", "diff", "--no-index", "--", "/dev/null", abs)
+	output, err := cmd.Output()
+	// git diff exits with code 1 when there are differences, which is expected
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
+			// Exit code 1 is expected for git diff when files differ
+		} else {
+			return "", err
+		}
+	}
+
+	return string(output), nil
 }
 
 func StageFile(repoPath string, path string) error {

@@ -161,30 +161,20 @@ type diffLoadedMsg struct {
 func loadDiff(repoPath string, filePath string, staged bool, isUntracked bool) tea.Cmd {
 	return func() tea.Msg {
 		if isUntracked {
-			// Check if the file is binary
-			if git.IsBinaryFile(repoPath, filePath) {
+			// Check if the file is binary using Git
+			isBinary, err := git.UntrackedIsBinary(repoPath, filePath)
+			if err != nil {
+				return diffLoadedMsg{diff: "", err: err}
+			}
+			if isBinary {
 				diff := fmt.Sprintf("Binary file %s (not shown)", filePath)
 				return diffLoadedMsg{diff: diff, err: nil}
 			}
 
-			// For untracked text files, show the file contents as if it's a new file
-			content, err := git.GetFileContents(repoPath, filePath)
+			// For untracked text files, use Git to generate the patch
+			diff, err := git.UntrackedPatch(repoPath, filePath)
 			if err != nil {
 				return diffLoadedMsg{diff: "", err: err}
-			}
-
-			lines := strings.Split(content, "\n")
-			// Format as a diff showing the entire file as added
-			diff := fmt.Sprintf("diff --git a/%s b/%s\n", filePath, filePath) +
-				"new file mode 100644\n" +
-				"index 0000000..xxxxxxx\n" +
-				"--- /dev/null\n" +
-				fmt.Sprintf("+++ b/%s\n", filePath) +
-				fmt.Sprintf("@@ -0,0 +1,%d @@\n", len(lines))
-
-			// Add each line as a new line
-			for _, line := range lines {
-				diff += "+" + line + "\n"
 			}
 
 			return diffLoadedMsg{diff: diff, err: nil}
