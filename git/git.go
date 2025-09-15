@@ -1,7 +1,10 @@
 package git
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -314,15 +317,121 @@ func GetDiff(repoPath string, path string, staged bool) (string, error) {
 	if path != "" {
 		args = append(args, "--", path)
 	}
-	
+
 	cmd := exec.Command("git", args...)
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
 	}
-	
+
 	return string(output), nil
+}
+
+type Numstat struct {
+	Added   string // "-" means binary
+	Deleted string // "-" means binary
+	OldPath string // for renames, this is the old path
+	Path    string // current path
+}
+
+func DiffNumstat(repoPath string, staged bool, paths ...string) ([]Numstat, error) {
+	args := []string{"diff", "--numstat", "--no-textconv"}
+	if staged {
+		args = append(args, "--cached")
+	}
+	if len(paths) > 0 {
+		args = append(args, "--")
+		args = append(args, paths...)
+	}
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = repoPath
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if err := cmd.Run(); err != nil {
+		return nil, err
+	}
+
+	var res []Numstat
+	sc := bufio.NewScanner(strings.NewReader(out.String()))
+	for sc.Scan() {
+		// formats:
+		// "12\t3\tpath"
+		// "-\t-\tpath"                              (binary)
+		// "10\t2\toldpath\tnewpath"                 (rename)
+		fields := strings.Split(sc.Text(), "\t")
+		if len(fields) < 3 {
+			continue
+		}
+		n := Numstat{Added: fields[0], Deleted: fields[1]}
+		if len(fields) == 3 {
+			n.Path = fields[2]
+		} else {
+			n.OldPath = fields[2]
+			n.Path = fields[3]
+		}
+		res = append(res, n)
+	}
+	return res, sc.Err()
+}
+
+func IsBinaryChange(repoPath string, staged bool, path string) (bool, error) {
+	stats, err := DiffNumstat(repoPath, staged, path)
+	if err != nil {
+		return false, err
+	}
+	if len(stats) == 0 {
+		return false, nil // no change
+	}
+	return stats[0].Added == "-" && stats[0].Deleted == "-", nil
+}
+
+func GetFileContents(repoPath string, path string) (string, error) {
+	fullPath := filepath.Join(repoPath, path)
+	content, err := os.ReadFile(fullPath)
+	if err != nil {
+		return "", err
+	}
+	return string(content), nil
+}
+
+func IsBinaryFile(repoPath string, path string) bool {
+	fullPath := filepath.Join(repoPath, path)
+
+	// Read first 512 bytes to check for binary content
+	file, err := os.Open(fullPath)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+
+	buffer := make([]byte, 512)
+	n, err := file.Read(buffer)
+	if err != nil && n == 0 {
+		return false
+	}
+
+	// Check for null bytes (common indicator of binary files)
+	for i := 0; i < n; i++ {
+		if buffer[i] == 0 {
+			return true
+		}
+	}
+
+	// Check for high percentage of non-printable characters
+	nonPrintable := 0
+	for i := 0; i < n; i++ {
+		// Allow common whitespace characters: tab(9), LF(10), CR(13), and space(32)
+		// Also allow printable ASCII (32-126) and common extended ASCII
+		if buffer[i] < 9 || (buffer[i] > 13 && buffer[i] < 32) || buffer[i] > 126 {
+			nonPrintable++
+		}
+	}
+
+	// If more than 30% non-printable, consider it binary
+	return float64(nonPrintable)/float64(n) > 0.3
 }
 
 func Fetch(repoPath string) error {

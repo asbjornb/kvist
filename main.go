@@ -45,6 +45,9 @@ type model struct {
 	creatingBranch    bool
 	branchInput       string
 	selectedBranchMenu int
+	// Diff view state
+	currentDiff    string
+	diffScrollOffset int
 }
 
 func initialModel() model {
@@ -150,6 +153,64 @@ func doBranchOperation(repoPath string, branch string, operation string) tea.Cmd
 	}
 }
 
+type diffLoadedMsg struct {
+	diff string
+	err  error
+}
+
+func loadDiff(repoPath string, filePath string, staged bool, isUntracked bool) tea.Cmd {
+	return func() tea.Msg {
+		if isUntracked {
+			// Check if the file is binary
+			if git.IsBinaryFile(repoPath, filePath) {
+				diff := fmt.Sprintf("Binary file %s (not shown)", filePath)
+				return diffLoadedMsg{diff: diff, err: nil}
+			}
+
+			// For untracked text files, show the file contents as if it's a new file
+			content, err := git.GetFileContents(repoPath, filePath)
+			if err != nil {
+				return diffLoadedMsg{diff: "", err: err}
+			}
+
+			lines := strings.Split(content, "\n")
+			// Format as a diff showing the entire file as added
+			diff := fmt.Sprintf("diff --git a/%s b/%s\n", filePath, filePath) +
+				"new file mode 100644\n" +
+				"index 0000000..xxxxxxx\n" +
+				"--- /dev/null\n" +
+				fmt.Sprintf("+++ b/%s\n", filePath) +
+				fmt.Sprintf("@@ -0,0 +1,%d @@\n", len(lines))
+
+			// Add each line as a new line
+			for _, line := range lines {
+				diff += "+" + line + "\n"
+			}
+
+			return diffLoadedMsg{diff: diff, err: nil}
+		}
+
+		// For tracked files, first check if it's a binary change using numstat
+		isBinary, err := git.IsBinaryChange(repoPath, staged, filePath)
+		if err != nil {
+			return diffLoadedMsg{diff: "", err: err}
+		}
+
+		if isBinary {
+			diff := fmt.Sprintf("Binary file %s (not shown)", filePath)
+			return diffLoadedMsg{diff: diff, err: nil}
+		}
+
+		// Get the actual diff for text files
+		diff, err := git.GetDiff(repoPath, filePath, staged)
+		if err != nil {
+			return diffLoadedMsg{diff: "", err: err}
+		}
+
+		return diffLoadedMsg{diff: diff, err: nil}
+	}
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
@@ -230,7 +291,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else if m.currentMode == filesMode {
 					if m.selectedFile > 0 {
 						m.selectedFile--
+						m.diffScrollOffset = 0
+						if m.repo != nil && m.status != nil && m.selectedFile < len(m.status.Files) {
+							file := m.status.Files[m.selectedFile]
+							return m, loadDiff(m.repo.Path, file.Path, file.Staged != "", file.Unstaged == "untracked")
+						}
 					}
+				}
+			case bottomPanel:
+				if m.currentMode == filesMode && m.diffScrollOffset > 0 {
+					m.diffScrollOffset--
 				}
 			}
 		case "down", "j":
@@ -243,6 +313,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else if m.currentMode == filesMode {
 					if m.status != nil && m.selectedFile < len(m.status.Files)-1 {
 						m.selectedFile++
+						m.diffScrollOffset = 0
+						if m.repo != nil {
+							file := m.status.Files[m.selectedFile]
+							return m, loadDiff(m.repo.Path, file.Path, file.Staged != "", file.Unstaged == "untracked")
+						}
+					}
+				}
+			case bottomPanel:
+				if m.currentMode == filesMode && m.currentDiff != "" {
+					// Prevent scrolling beyond the content
+					diffLines := strings.Split(m.currentDiff, "\n")
+					maxScroll := len(diffLines) - 10 // Keep some buffer
+					if maxScroll < 0 {
+						maxScroll = 0
+					}
+					if m.diffScrollOffset < maxScroll {
+						m.diffScrollOffset++
 					}
 				}
 			}
@@ -262,8 +349,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, loadRepository(".")
 		case "h":
 			m.currentMode = historyMode
+			m.currentDiff = "" // Clear diff when switching to history mode
 		case "s":
 			m.currentMode = filesMode
+			m.diffScrollOffset = 0 // Reset scroll when switching to files mode
 		case "b":
 			if m.repo != nil {
 				m.showingBranchMenu = true
@@ -293,6 +382,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.remotes = msg.remotes
 		m.stashes = msg.stashes
 		m.err = msg.err
+		// Load diff for first file if in files mode
+		if m.currentMode == filesMode && m.repo != nil && m.status != nil && len(m.status.Files) > 0 {
+			file := m.status.Files[0]
+			return m, loadDiff(m.repo.Path, file.Path, file.Staged != "", file.Unstaged == "untracked")
+		}
+	case diffLoadedMsg:
+		if msg.err == nil {
+			m.currentDiff = msg.diff
+		}
 	case gitOperationMsg:
 		if msg.err == nil {
 			return m, loadRepository(".")
@@ -665,7 +763,7 @@ func (m model) renderFiles(width, height int) string {
 					statusChar = "D"
 					statusStyle = unstagedStyle
 				case "untracked":
-					statusChar = "?"
+					statusChar = "A"
 					statusStyle = untrackedStyle
 				}
 			}
@@ -700,30 +798,147 @@ func (m model) renderFileDiff(width, height int) string {
 		Bold(true).
 		Foreground(lipgloss.Color("170"))
 
-	title := titleStyle.Render("Diff")
+	addStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("42"))
+
+	removeStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("196"))
+
+	lineNumStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("242"))
+
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("214"))
 
 	if m.status == nil || len(m.status.Files) == 0 || m.selectedFile >= len(m.status.Files) {
+		title := titleStyle.Render("Diff")
 		content := title + "\n\n" + "  No file selected"
 		return panelStyle.Render(content)
 	}
 
 	file := m.status.Files[m.selectedFile]
-	content := []string{
-		title,
-		"",
-		"File: " + file.Path,
-		"Status: " + func() string {
-			if file.Staged != "" && file.Unstaged != "" {
-				return file.Staged + " (staged), " + file.Unstaged + " (unstaged)"
-			} else if file.Staged != "" {
-				return file.Staged + " (staged)"
-			} else if file.Unstaged != "" {
-				return file.Unstaged
+
+	// Show filename in title
+	title := titleStyle.Render("Diff: " + file.Path)
+
+	// Header info
+	content := []string{title, ""}
+
+	// If we have diff content, show it
+	if m.currentDiff != "" {
+		// Check if this is a binary file (our loadDiff function returns this format)
+		if strings.HasPrefix(m.currentDiff, "Binary file ") {
+			content = append(content, "", "  📄 Binary file", "", "  This appears to be a binary file and cannot be displayed as text.")
+		} else {
+			diffLines := strings.Split(m.currentDiff, "\n")
+
+			// Calculate visible lines (leave more space for content)
+			availableLines := height - 3 // Account for title and border
+			startLine := m.diffScrollOffset
+			endLine := startLine + availableLines
+
+			if endLine > len(diffLines) {
+				endLine = len(diffLines)
 			}
-			return "unknown"
-		}(),
-		"",
-		"Diff preview coming soon...",
+
+			// Add scroll indicator if needed
+			if len(diffLines) > availableLines {
+				scrollInfo := fmt.Sprintf(" [%d-%d/%d lines]", startLine+1, min(endLine, len(diffLines)), len(diffLines))
+				content[0] = title + lineNumStyle.Render(scrollInfo)
+			}
+
+			for i := startLine; i < endLine; i++ {
+				if i >= len(diffLines) {
+					break
+				}
+
+				line := diffLines[i]
+
+				// Style the line based on its prefix
+				var styledLine string
+				maxWidth := width - 4 // Account for border
+
+				switch {
+				case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
+					if len(line) > maxWidth {
+						line = line[:maxWidth-3] + "..."
+					}
+					styledLine = headerStyle.Render(line)
+				case strings.HasPrefix(line, "@@"):
+					if len(line) > maxWidth {
+						line = line[:maxWidth-3] + "..."
+					}
+					styledLine = lineNumStyle.Render(line)
+				case strings.HasPrefix(line, "+"):
+					if len(line) > maxWidth {
+						line = line[:maxWidth-3] + "..."
+					}
+					// Show whitespace changes more clearly
+					lineContent := line[1:] // Remove the + prefix
+					if len(strings.TrimSpace(lineContent)) == 0 && len(lineContent) > 0 {
+						// Show what kind of whitespace
+						whitespaceDesc := ""
+						if strings.Contains(lineContent, "\t") {
+							whitespaceDesc += "tabs "
+						}
+						if strings.Contains(lineContent, " ") {
+							whitespaceDesc += "spaces "
+						}
+						if strings.Contains(lineContent, "\r") {
+							whitespaceDesc += "CR "
+						}
+						if whitespaceDesc == "" {
+							whitespaceDesc = fmt.Sprintf("%d chars ", len(lineContent))
+						}
+						styledLine = addStyle.Render(fmt.Sprintf("+ (%s)", strings.TrimSpace(whitespaceDesc)))
+					} else {
+						styledLine = addStyle.Render(line)
+					}
+				case strings.HasPrefix(line, "-"):
+					if len(line) > maxWidth {
+						line = line[:maxWidth-3] + "..."
+					}
+					// Show whitespace changes more clearly
+					lineContent := line[1:] // Remove the - prefix
+					if len(strings.TrimSpace(lineContent)) == 0 && len(lineContent) > 0 {
+						// Show what kind of whitespace
+						whitespaceDesc := ""
+						if strings.Contains(lineContent, "\t") {
+							whitespaceDesc += "tabs "
+						}
+						if strings.Contains(lineContent, " ") {
+							whitespaceDesc += "spaces "
+						}
+						if strings.Contains(lineContent, "\r") {
+							whitespaceDesc += "CR "
+						}
+						if whitespaceDesc == "" {
+							whitespaceDesc = fmt.Sprintf("%d chars ", len(lineContent))
+						}
+						styledLine = removeStyle.Render(fmt.Sprintf("- (%s)", strings.TrimSpace(whitespaceDesc)))
+					} else {
+						styledLine = removeStyle.Render(line)
+					}
+				default:
+					if len(line) > maxWidth {
+						line = line[:maxWidth-3] + "..."
+					}
+					styledLine = line
+				}
+
+				content = append(content, styledLine)
+			}
+		}
+	} else if file.Unstaged == "untracked" {
+		content = append(content, "", "  Loading file contents...")
+	} else {
+		// Show if we're waiting for diff or if there's no diff
+		status := "staged"
+		if file.Staged == "" {
+			status = "modified"
+		}
+		content = append(content, "", fmt.Sprintf("  No diff available for %s file", status))
+		content = append(content, "", "  (File may have no changes or loading failed)")
 	}
 
 	return panelStyle.Render(strings.Join(content, "\n"))
