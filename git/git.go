@@ -235,7 +235,8 @@ type Branch struct {
 }
 
 func GetStatus(repoPath string) (*Status, error) {
-	cmd := exec.Command("git", "status", "--porcelain=v1")
+	// Use porcelain v2 with NUL-separated output for robust parsing
+	cmd := exec.Command("git", "status", "--porcelain=v2", "-z")
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -246,57 +247,128 @@ func GetStatus(repoPath string) (*Status, error) {
 		Files: []FileStatus{},
 	}
 
-	lines := strings.Split(string(output), "\n")
-	for _, line := range lines {
-		if line == "" {
-			continue
-		}
-		if len(line) < 3 {
-			continue
-		}
+	b := output
+	for len(b) > 0 {
+		// Each record starts with a code, ends with NUL(s)
+		// v2 formats:
+		// 1 <xy> <sub> <mH> <mI> <mW> <hH> <hI> <path>\0
+		// 2 <xy> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path>\0<origPath>\0
+		// ? <path>\0
+		// ! <path>\0 (ignored file)
 
-		x := line[0]
-		y := line[1]
-		path := strings.TrimSpace(line[3:])
-
-		var staged, unstaged string
-		
-		switch x {
-		case 'M':
-			staged = "modified"
-		case 'A':
-			staged = "added"
-		case 'D':
-			staged = "deleted"
-		case 'R':
-			staged = "renamed"
-		case ' ', '?':
-			staged = ""
-		default:
-			staged = "modified"
+		if len(b) == 0 {
+			break
 		}
 
-		switch y {
-		case 'M':
-			unstaged = "modified"
-		case 'D':
-			unstaged = "deleted"
+		switch b[0] {
 		case '?':
-			unstaged = "untracked"
-		case ' ':
-			unstaged = ""
-		default:
-			unstaged = "modified"
-		}
+			// Untracked file
+			b = b[2:] // skip "? "
+			path, rest := readToNul(b)
+			status.Files = append(status.Files, FileStatus{
+				Path:     string(path),
+				Unstaged: "untracked",
+			})
+			b = rest
 
-		status.Files = append(status.Files, FileStatus{
-			Path:     path,
-			Staged:   staged,
-			Unstaged: unstaged,
-		})
+		case '!':
+			// Ignored file - skip it
+			_, rest := readToNul(b)
+			b = rest
+
+		case '1':
+			// Normal change
+			line, rest := readToNul(b)
+			fields := strings.Fields(string(line))
+			if len(fields) < 9 {
+				b = rest
+				continue
+			}
+
+			xy := fields[1]
+			path := fields[8]
+
+			fileStatus := FileStatus{Path: path}
+
+			// Parse staged status (X)
+			switch xy[0] {
+			case 'M':
+				fileStatus.Staged = "modified"
+			case 'A':
+				fileStatus.Staged = "added"
+			case 'D':
+				fileStatus.Staged = "deleted"
+			case 'R':
+				fileStatus.Staged = "renamed"
+			case 'C':
+				fileStatus.Staged = "copied"
+			}
+
+			// Parse unstaged status (Y)
+			switch xy[1] {
+			case 'M':
+				fileStatus.Unstaged = "modified"
+			case 'D':
+				fileStatus.Unstaged = "deleted"
+			}
+
+			status.Files = append(status.Files, fileStatus)
+			b = rest
+
+		case '2':
+			// Rename or copy
+			line, rest := readToNul(b)
+			fields := strings.Fields(string(line))
+			if len(fields) < 10 {
+				b = rest
+				continue
+			}
+
+			xy := fields[1]
+			// After the first NUL, read the two paths
+			origPath, rest2 := readToNul(rest)
+			newPath, rest3 := readToNul(rest2)
+
+			fileStatus := FileStatus{
+				Path:    string(newPath),
+				OldPath: string(origPath),
+			}
+
+			// Parse staged status (X)
+			switch xy[0] {
+			case 'R':
+				fileStatus.Staged = "renamed"
+			case 'C':
+				fileStatus.Staged = "copied"
+			}
+
+			// Parse unstaged status (Y)
+			switch xy[1] {
+			case 'M':
+				fileStatus.Unstaged = "modified"
+			case 'D':
+				fileStatus.Unstaged = "deleted"
+			}
+
+			status.Files = append(status.Files, fileStatus)
+			b = rest3
+
+		default:
+			// Unknown format, skip to next NUL
+			_, rest := readToNul(b)
+			b = rest
+		}
 	}
 
 	return status, nil
+}
+
+func readToNul(b []byte) (field []byte, rest []byte) {
+	i := bytes.IndexByte(b, 0)
+	if i < 0 {
+		return b, nil
+	}
+	return b[:i], b[i+1:]
 }
 
 type Status struct {
@@ -305,6 +377,7 @@ type Status struct {
 
 type FileStatus struct {
 	Path     string
+	OldPath  string // For renames
 	Staged   string
 	Unstaged string
 }

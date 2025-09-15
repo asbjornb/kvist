@@ -770,10 +770,16 @@ func (m model) renderFiles(width, height int) string {
 
 			status := statusStyle.Render(statusChar)
 			fileName := file.Path
+
+			// Handle renames - show "old -> new"
+			if file.OldPath != "" {
+				fileName = fmt.Sprintf("%s -> %s", file.OldPath, file.Path)
+			}
+
 			if len(fileName) > width-8 {
 				fileName = "..." + fileName[len(fileName)-(width-11):]
 			}
-			
+
 			line := fmt.Sprintf(" %s %s", status, fileName)
 			content = append(content, style.Width(width-2).Render(line))
 		}
