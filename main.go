@@ -691,6 +691,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.diffScrollOffset = 0
 				m.loadingRepo = true
 				m.loadingMetadata = true
+
+				// Track this as the last accessed repository
+				if m.scanner != nil {
+					m.scanner.UpdateLastRepo(selectedRepo.Path)
+					// Save state to disk (best effort, don't block on errors)
+					go func() {
+						if cache := m.scanner.GetCache(); cache != nil {
+							cache.Save()
+						}
+					}()
+				}
+
 				return m, loadRepositoryIncremental(selectedRepo.Path)
 			} else if m.currentMode == workspaceManageMode && m.workspaceConfig != nil {
 				if m.selectedWorkspace == len(m.workspaceConfig.Workspaces) {
@@ -704,6 +716,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Open workspace - show repos from this workspace only
 					m.currentWorkspace = &m.workspaceConfig.Workspaces[m.selectedWorkspace]
 					m.currentMode = workspaceMode
+
+					// Track this as the last accessed workspace
+					if m.scanner != nil {
+						m.scanner.UpdateLastWorkspace(m.currentWorkspace.Name)
+						// Save state to disk (best effort, don't block on errors)
+						go func() {
+							if cache := m.scanner.GetCache(); cache != nil {
+								cache.Save()
+							}
+						}()
+					}
+
 					// Load all cached repos and let updateFilteredRepos() handle workspace filtering
 					if m.scanner != nil {
 						m.repos = m.scanner.GetCachedRepos()
@@ -782,7 +806,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.scanner = workspace.NewScanner(msg.config, msg.cache)
 			// Load cached repos immediately
 			m.repos = m.scanner.GetCachedRepos()
-			// Don't automatically start scan - let user trigger it with 'r'
+
+			// Smart startup: restore last session or show workspace selection
+			cmd := m.smartStartup()
+			if cmd != nil {
+				return m, cmd
+			}
 		}
 	case workspaceScanMsg:
 		m.scanning = false
@@ -821,6 +850,60 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// smartStartup determines the best startup mode based on cached session state
+func (m *model) smartStartup() tea.Cmd {
+	// Check if we have session state
+	if m.repoCache.LastRepoPath != "" {
+		// Try to restore to the last repository
+		if repo, exists := m.repoCache.Repos[m.repoCache.LastRepoPath]; exists {
+			// Set the workspace context
+			for _, ws := range m.workspaceConfig.Workspaces {
+				if ws.Name == repo.WorkspaceName {
+					m.currentWorkspace = &ws
+					break
+				}
+			}
+
+			// Load the repository and go to files mode
+			m.currentMode = filesMode
+			m.selectedFile = 0
+			m.diffScrollOffset = 0
+			m.loadingRepo = true
+			m.loadingMetadata = true
+
+			m.updateFilteredRepos()
+			// Return command to load the last repository
+			return loadRepositoryIncremental(m.repoCache.LastRepoPath)
+		}
+	}
+
+	// Fallback: If we have a last workspace, open that workspace
+	if m.repoCache.LastWorkspace != "" {
+		for _, ws := range m.workspaceConfig.Workspaces {
+			if ws.Name == m.repoCache.LastWorkspace {
+				m.currentWorkspace = &ws
+				m.currentMode = workspaceMode
+				m.updateFilteredRepos()
+				return nil
+			}
+		}
+	}
+
+	// Final fallback: Show workspace selection if we have workspaces
+	if len(m.workspaceConfig.Workspaces) > 0 {
+		m.currentMode = workspaceManageMode
+		m.selectedWorkspace = 0
+		m.editingWorkspace = false
+	} else {
+		// No workspaces configured, stay in mixed mode
+		m.currentMode = workspaceMode
+		m.currentWorkspace = nil
+		m.updateFilteredRepos()
+	}
+
+	return nil
 }
 
 func (m model) View() string {

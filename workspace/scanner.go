@@ -489,3 +489,21 @@ func (s *Scanner) UpdateCacheRepo(repo RepoInfo) {
 func (s *Scanner) GetCache() *RepoCache {
 	return s.cache
 }
+
+// UpdateLastRepo updates the last accessed repository in cache
+func (s *Scanner) UpdateLastRepo(repoPath string) {
+	s.mu.Lock()
+	s.cache.LastRepoPath = repoPath
+	// Also update workspace if we can determine it from the repo
+	if repo, exists := s.cache.Repos[repoPath]; exists {
+		s.cache.LastWorkspace = repo.WorkspaceName
+	}
+	s.mu.Unlock()
+}
+
+// UpdateLastWorkspace updates the last accessed workspace in cache
+func (s *Scanner) UpdateLastWorkspace(workspaceName string) {
+	s.mu.Lock()
+	s.cache.LastWorkspace = workspaceName
+	s.mu.Unlock()
+}

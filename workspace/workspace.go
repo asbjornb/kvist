@@ -45,8 +45,10 @@ type RepoInfo struct {
 
 // RepoCache holds cached repository information
 type RepoCache struct {
-	Version time.Time           `json:"version"`
-	Repos   map[string]RepoInfo `json:"repos"` // path -> RepoInfo
+	Version         time.Time           `json:"version"`
+	Repos           map[string]RepoInfo `json:"repos"`           // path -> RepoInfo
+	LastRepoPath    string              `json:"lastRepoPath"`    // last opened repository
+	LastWorkspace   string              `json:"lastWorkspace"`   // last opened workspace
 }
 
 // LoadConfig loads the kvist configuration from disk
