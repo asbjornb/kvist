@@ -327,3 +327,31 @@ func TestUntrackedPatch(t *testing.T) {
 
 	t.Logf("Generated patch length: %d chars", len(patch))
 }
+
+func TestRunGitAllowExit1(t *testing.T) {
+	// Test that the helper properly handles exit code 1 from git diff
+	tempDir, err := os.MkdirTemp("", "kvist_test_runner")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	// Create a text file to diff against /dev/null
+	testFile := filepath.Join(tempDir, "test.txt")
+	err = os.WriteFile(testFile, []byte("Hello, world!\n"), 0644)
+	if err != nil {
+		t.Fatalf("Failed to create test file: %v", err)
+	}
+
+	// This should succeed even though git diff returns exit code 1
+	output, err := runGitAllowExit1("", "diff", "--no-index", "--", "/dev/null", testFile)
+	if err != nil {
+		t.Fatalf("runGitAllowExit1 should handle exit code 1: %v", err)
+	}
+
+	if !strings.Contains(output, "+Hello, world!") {
+		t.Errorf("Output should contain the diff content")
+	}
+
+	t.Logf("Diff output length: %d chars", len(output))
+}

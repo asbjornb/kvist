@@ -3,6 +3,7 @@ package git
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -382,7 +383,7 @@ type FileStatus struct {
 }
 
 func GetDiff(repoPath string, path string, staged bool) (string, error) {
-	args := []string{"-c", "color.ui=false", "diff", "--no-ext-diff", "-U3"}
+	args := []string{"diff", "--no-ext-diff", "-U3"}
 	if staged {
 		args = append(args, "--cached")
 	}
@@ -390,7 +391,7 @@ func GetDiff(repoPath string, path string, staged bool) (string, error) {
 		args = append(args, "--", path)
 	}
 
-	return run(repoPath, args...)
+	return runGitAllowExit1(repoPath, args...)
 }
 
 type Numstat struct {
@@ -410,17 +411,13 @@ func DiffNumstat(repoPath string, staged bool, paths ...string) ([]Numstat, erro
 		args = append(args, paths...)
 	}
 
-	cmd := exec.Command("git", args...)
-	cmd.Dir = repoPath
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
+	output, err := runGitAllowExit1(repoPath, args...)
+	if err != nil {
 		return nil, err
 	}
 
 	var res []Numstat
-	sc := bufio.NewScanner(strings.NewReader(out.String()))
+	sc := bufio.NewScanner(strings.NewReader(output))
 	for sc.Scan() {
 		// formats:
 		// "12\t3\tpath"
@@ -530,22 +527,43 @@ func run(repoPath string, args ...string) (string, error) {
 	return string(output), nil
 }
 
+// runGitAllowExit1 executes git commands that may exit with code 1 (like diff)
+func runGitAllowExit1(dir string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	base := []string{
+		"-c", "color.ui=false",
+		"-c", "core.pager=cat",
+		"-c", "pager.diff=false",
+		"-c", "pager.show=false",
+	}
+	cmd := exec.CommandContext(ctx, "git", append(base, args...)...)
+	cmd.Dir = dir
+	// ensure no pager even if user config overrides
+	cmd.Env = append(os.Environ(), "GIT_PAGER=cat")
+
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	err := cmd.Run()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 1 {
+			return out.String(), nil // differences found → OK
+		}
+		return out.String(), err
+	}
+	return out.String(), nil
+}
+
 // UntrackedIsBinary detects if an untracked file is binary using git diff --numstat
 func UntrackedIsBinary(repoPath, rel string) (bool, error) {
 	abs := filepath.Join(repoPath, rel)
 
-	cmd := exec.Command("git", "diff", "--numstat", "--no-textconv", "--no-index", "--", "/dev/null", abs)
-	output, err := cmd.Output()
-	// git diff exits with code 1 when there are differences, which is expected
+	out, err := runGitAllowExit1("", "diff", "--numstat", "--no-textconv", "--no-index", "--", "/dev/null", abs)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			// Exit code 1 is expected for git diff when files differ
-		} else {
-			return false, err
-		}
+		return false, err
 	}
 
-	out := string(output)
 	// lines look like "-\t-\t/path" for binary
 	for _, ln := range strings.Split(strings.TrimSpace(out), "\n") {
 		f := strings.Split(ln, "\t")
@@ -559,19 +577,7 @@ func UntrackedIsBinary(repoPath, rel string) (bool, error) {
 // UntrackedPatch generates a patch for an untracked file using git diff --no-index
 func UntrackedPatch(repoPath, rel string) (string, error) {
 	abs := filepath.Join(repoPath, rel)
-
-	cmd := exec.Command("git", "diff", "--no-index", "--", "/dev/null", abs)
-	output, err := cmd.Output()
-	// git diff exits with code 1 when there are differences, which is expected
-	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			// Exit code 1 is expected for git diff when files differ
-		} else {
-			return "", err
-		}
-	}
-
-	return string(output), nil
+	return runGitAllowExit1("", "diff", "--no-index", "--", "/dev/null", abs)
 }
 
 func StageFile(repoPath string, path string) error {
