@@ -13,14 +13,14 @@ func TestConfig(t *testing.T) {
 	config := &Config{
 		Version: 1,
 		Workspaces: []Workspace{
-			{Name: "test1", Path: "/tmp/test1", Enabled: true},
-			{Name: "test2", Path: "/tmp/test2", Enabled: false},
+			{Name: "test1", Path: "/tmp/test1"},
+			{Name: "test2", Path: "/tmp/test2"},
 		},
 	}
 
 	// Test adding a workspace
 	config.Workspaces = append(config.Workspaces, Workspace{
-		Name: "test3", Path: "/tmp/test3", Enabled: true,
+		Name: "test3", Path: "/tmp/test3",
 	})
 
 	if len(config.Workspaces) != 3 {
@@ -38,8 +38,6 @@ func TestConfig(t *testing.T) {
 
 	if found == nil {
 		t.Errorf("Could not find workspace 'test2'")
-	} else if found.Enabled {
-		t.Errorf("Expected workspace 'test2' to be disabled")
 	}
 }
 
@@ -102,7 +100,7 @@ func TestScanner(t *testing.T) {
 	config := &Config{
 		Version: 1,
 		Workspaces: []Workspace{
-			{Name: "test", Path: tempDir, Enabled: true},
+			{Name: "test", Path: tempDir},
 		},
 	}
 

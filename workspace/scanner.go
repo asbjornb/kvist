@@ -45,9 +45,6 @@ func (s *Scanner) ScanWorkspaces(ctx context.Context) <-chan ScanResult {
 
 		// Discover repos in each workspace
 		for _, workspace := range s.config.Workspaces {
-			if !workspace.Enabled {
-				continue
-			}
 
 			repos, err := s.discoverRepos(ctx, workspace)
 			if err != nil {
@@ -270,4 +267,55 @@ func (s *Scanner) UpdateRepo(ctx context.Context, repoPath string) error {
 	s.mu.Unlock()
 
 	return s.cache.Save()
+}
+
+// ScanSingleWorkspace scans a single workspace and updates the cache
+func (s *Scanner) ScanSingleWorkspace(ctx context.Context, workspace Workspace) <-chan ScanResult {
+	results := make(chan ScanResult, 1)
+
+	go func() {
+		defer close(results)
+
+		repos, err := s.discoverRepos(ctx, workspace)
+		if err != nil {
+			select {
+			case results <- ScanResult{Repos: nil, Error: err}:
+			case <-ctx.Done():
+			}
+			return
+		}
+
+		// Scan each repo for metadata in parallel
+		scanned := s.scanRepos(ctx, repos, workspace.Name)
+
+		// Update cache with results from this workspace
+		s.mu.Lock()
+		// Remove old repos from this workspace
+		for path, repo := range s.cache.Repos {
+			if repo.WorkspaceName == workspace.Name {
+				delete(s.cache.Repos, path)
+			}
+		}
+		// Add new repos from this workspace
+		for _, repo := range scanned {
+			s.cache.Repos[repo.Path] = repo
+		}
+		s.mu.Unlock()
+
+		// Save cache to disk
+		if err := s.cache.Save(); err != nil {
+			select {
+			case results <- ScanResult{Repos: scanned, Error: fmt.Errorf("failed to save cache: %v", err)}:
+			case <-ctx.Done():
+			}
+			return
+		}
+
+		select {
+		case results <- ScanResult{Repos: scanned, Error: nil}:
+		case <-ctx.Done():
+		}
+	}()
+
+	return results
 }

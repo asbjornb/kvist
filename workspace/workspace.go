@@ -26,9 +26,8 @@ type Config struct {
 
 // Workspace represents a workspace configuration
 type Workspace struct {
-	Name    string `yaml:"name"`
-	Path    string `yaml:"path"`
-	Enabled bool   `yaml:"enabled"`
+	Name string `yaml:"name"`
+	Path string `yaml:"path"`
 }
 
 // RepoInfo holds metadata about a discovered repository
@@ -118,9 +117,8 @@ func (c *Config) AddWorkspace(name, path string) error {
 	}
 
 	c.Workspaces = append(c.Workspaces, Workspace{
-		Name:    name,
-		Path:    path,
-		Enabled: true,
+		Name: name,
+		Path: path,
 	})
 
 	return c.Save()

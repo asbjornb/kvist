@@ -68,6 +68,7 @@ type model struct {
 	newWorkspaceName  string
 	newWorkspacePath  string
 	editingField      int  // 0 = name, 1 = path
+	currentWorkspace  *workspace.Workspace // currently selected workspace
 }
 
 func initialModel() model {
@@ -253,6 +254,18 @@ func scanWorkspaces(config *workspace.Config, cache *workspace.RepoCache) tea.Cm
 	}
 }
 
+func scanSingleWorkspace(scanner *workspace.Scanner, ws *workspace.Workspace) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		results := scanner.ScanSingleWorkspace(ctx, *ws)
+		result := <-results
+
+		return workspaceScanMsg{repos: result.Repos, err: result.Error}
+	}
+}
+
 func tickCmd() tea.Cmd {
 	return tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg {
 		return tickMsg(t)
@@ -339,9 +352,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.newWorkspaceName != "" && m.newWorkspacePath != "" && m.workspaceConfig != nil {
 					// Add new workspace
 					newWorkspace := workspace.Workspace{
-						Name:    m.newWorkspaceName,
-						Path:    m.newWorkspacePath,
-						Enabled: true,
+						Name: m.newWorkspaceName,
+						Path: m.newWorkspacePath,
 					}
 					m.workspaceConfig.Workspaces = append(m.workspaceConfig.Workspaces, newWorkspace)
 					if err := m.workspaceConfig.Save(); err == nil {
@@ -464,7 +476,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			if m.currentMode == workspaceMode {
 				// Refresh workspace scan
-				if m.workspaceConfig != nil && m.repoCache != nil {
+				if m.currentWorkspace != nil && m.scanner != nil {
+					// Scan only the current workspace
+					m.scanning = true
+					return m, tea.Batch(
+						scanSingleWorkspace(m.scanner, m.currentWorkspace),
+						tickCmd(),
+					)
+				} else if m.workspaceConfig != nil && m.repoCache != nil {
+					// Fallback: scan all workspaces if no current workspace selected
 					m.scanning = true
 					return m, tea.Batch(
 						scanWorkspaces(m.workspaceConfig, m.repoCache),
@@ -532,14 +552,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.editingField = 0 // Start with name field
 					return m, tickCmd() // Start tick for cursor animation
 				} else if m.selectedWorkspace < len(m.workspaceConfig.Workspaces) {
-					// Toggle workspace enabled/disabled
-					workspace := &m.workspaceConfig.Workspaces[m.selectedWorkspace]
-					workspace.Enabled = !workspace.Enabled
-					if err := m.workspaceConfig.Save(); err == nil {
-						// Refresh repos if we have a scanner
-						if m.scanner != nil {
-							m.repos = m.scanner.GetCachedRepos()
+					// Open workspace - show repos from this workspace only
+					m.currentWorkspace = &m.workspaceConfig.Workspaces[m.selectedWorkspace]
+					m.currentMode = workspaceMode
+					// Filter repos to show only from this workspace
+					if m.scanner != nil {
+						allRepos := m.scanner.GetCachedRepos()
+						var workspaceRepos []workspace.RepoInfo
+						for _, repo := range allRepos {
+							if repo.WorkspaceName == m.currentWorkspace.Name {
+								workspaceRepos = append(workspaceRepos, repo)
+							}
 						}
+						m.repos = workspaceRepos
 					}
 				}
 			} else if m.activePanel == topPanel && m.currentMode == filesMode && m.status != nil && m.selectedFile < len(m.status.Files) {
@@ -589,7 +614,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scanning = false
 		m.lastScanTime = time.Now()
 		if msg.err == nil {
-			m.repos = msg.repos
+			if m.currentWorkspace != nil {
+				// Filter repos to show only from current workspace
+				var workspaceRepos []workspace.RepoInfo
+				for _, repo := range msg.repos {
+					if repo.WorkspaceName == m.currentWorkspace.Name {
+						workspaceRepos = append(workspaceRepos, repo)
+					}
+				}
+				m.repos = workspaceRepos
+			} else {
+				// Show all repos when no specific workspace is selected
+				m.repos = msg.repos
+			}
 		}
 	case tickMsg:
 		// Continue ticking if scanning or editing workspace
@@ -1284,13 +1321,20 @@ func (m model) renderWorkspaces(width, height int) string {
 			// Add a simple spinner animation
 			spinners := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 			spinner := spinners[int(time.Now().UnixMilli()/100)%len(spinners)]
+			if m.currentWorkspace != nil {
+				return fmt.Sprintf("%s Scanning '%s'... (%d found)", spinner, m.currentWorkspace.Name, len(m.repos))
+			}
 			return fmt.Sprintf("%s Scanning Workspaces... (%d found)", spinner, len(m.repos))
 		}
 		lastScan := ""
 		if !m.lastScanTime.IsZero() {
 			lastScan = fmt.Sprintf(" • Last scan: %s ago", formatRelativeTime(m.lastScanTime))
 		}
-		return fmt.Sprintf("📁 Repositories (%d)%s", len(m.repos), lastScan)
+
+		if m.currentWorkspace != nil {
+			return fmt.Sprintf("📂 %s (%d repos)%s", m.currentWorkspace.Name, len(m.repos), lastScan)
+		}
+		return fmt.Sprintf("📁 All Repositories (%d)%s", len(m.repos), lastScan)
 	}())
 
 	content := []string{title, ""}
@@ -1311,19 +1355,10 @@ func (m model) renderWorkspaces(width, height int) string {
 				// Workspaces configured but no repos found
 				content = append(content, itemStyle.Render("No repositories found"))
 				content = append(content, itemStyle.Render(""))
-				hasEnabledWorkspaces := false
-				if m.workspaceConfig != nil {
-					for _, ws := range m.workspaceConfig.Workspaces {
-						if ws.Enabled {
-							hasEnabledWorkspaces = true
-							break
-						}
-					}
-				}
-				if hasEnabledWorkspaces {
-					content = append(content, itemStyle.Render("Press 'r' to scan configured workspaces"))
+				if m.currentWorkspace != nil {
+					content = append(content, itemStyle.Render(fmt.Sprintf("Press 'r' to scan workspace '%s'", m.currentWorkspace.Name)))
 				} else {
-					content = append(content, itemStyle.Render("Press 'w' to enable workspaces or add new ones"))
+					content = append(content, itemStyle.Render("Press 'w' to select a workspace, then press 'r' to scan"))
 				}
 			}
 		}
@@ -1494,11 +1529,6 @@ func (m model) renderWorkspaceManager(width, height int) string {
 		PaddingLeft(1).
 		Background(lipgloss.Color("238"))
 
-	enabledStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("82"))
-
-	disabledStyle := lipgloss.NewStyle().
-		Foreground(lipgloss.Color("240"))
 
 	title := titleStyle.Render("⚙️  Workspace Management")
 	content := []string{title, ""}
@@ -1572,16 +1602,19 @@ func (m model) renderWorkspaceManager(width, height int) string {
 					break
 				}
 
-				var line string
-				status := "🔴"
-				style := disabledStyle
-				if ws.Enabled {
-					status = "🟢"
-					style = enabledStyle
+				// Count repos in this workspace
+				repoCount := 0
+				if m.scanner != nil {
+					allRepos := m.scanner.GetCachedRepos()
+					for _, repo := range allRepos {
+						if repo.WorkspaceName == ws.Name {
+							repoCount++
+						}
+					}
 				}
 
-				line = fmt.Sprintf("  %s %s", status, style.Render(ws.Name))
-				line += fmt.Sprintf(" (%s)", ws.Path)
+				line := fmt.Sprintf("  📂 %s (%d repos)", ws.Name, repoCount)
+				line += fmt.Sprintf(" - %s", ws.Path)
 
 				if i == m.selectedWorkspace {
 					content = append(content, selectedStyle.Render(line))
@@ -1635,7 +1668,7 @@ func (m model) renderWorkspaceHelp(width, height int) string {
 	} else {
 		content = append(content,
 			helpStyle.Render("↑↓/jk: Navigate workspaces"),
-			helpStyle.Render("Space/Enter: Toggle enabled/Add new"),
+			helpStyle.Render("Space/Enter: Open workspace/Add new"),
 			helpStyle.Render("d: Delete workspace"),
 			helpStyle.Render("w: Back to workspace view"),
 			helpStyle.Render("q: Quit"),
