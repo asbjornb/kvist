@@ -13,6 +13,29 @@ import (
 	"time"
 )
 
+// GitOp represents a git operation type
+type GitOp int
+
+const (
+	OpFetch GitOp = iota
+	OpPull
+	OpPush
+)
+
+// String returns the string representation of the GitOp
+func (op GitOp) String() string {
+	switch op {
+	case OpFetch:
+		return "fetch"
+	case OpPull:
+		return "pull"
+	case OpPush:
+		return "push"
+	default:
+		return "unknown"
+	}
+}
+
 type Repository struct {
 	Path       string
 	Name       string
@@ -500,27 +523,46 @@ func IsBinaryFile(repoPath string, path string) bool {
 	return float64(nonPrintable)/float64(n) > 0.3
 }
 
-func Fetch(repoPath string) error {
-	cmd := exec.Command("git", "fetch")
+// ExecuteGitOp performs a git operation with proper timeout handling
+func ExecuteGitOp(repoPath string, op GitOp) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	var cmd *exec.Cmd
+	switch op {
+	case OpFetch:
+		cmd = exec.CommandContext(ctx, "git", "fetch")
+	case OpPull:
+		cmd = exec.CommandContext(ctx, "git", "pull")
+	case OpPush:
+		cmd = exec.CommandContext(ctx, "git", "push")
+	default:
+		return fmt.Errorf("unknown git operation: %v", op)
+	}
+
 	cmd.Dir = repoPath
 	return cmd.Run()
+}
+
+// Legacy functions for backward compatibility (use ExecuteGitOp instead)
+func Fetch(repoPath string) error {
+	return ExecuteGitOp(repoPath, OpFetch)
 }
 
 func Pull(repoPath string) error {
-	cmd := exec.Command("git", "pull")
-	cmd.Dir = repoPath
-	return cmd.Run()
+	return ExecuteGitOp(repoPath, OpPull)
 }
 
 func Push(repoPath string) error {
-	cmd := exec.Command("git", "push")
-	cmd.Dir = repoPath
-	return cmd.Run()
+	return ExecuteGitOp(repoPath, OpPush)
 }
 
-// run executes a git command and returns the output
+// run executes a git command with timeout and returns the output
 func run(repoPath string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
 	if repoPath != "" {
 		cmd.Dir = repoPath
 	}

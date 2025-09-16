@@ -412,3 +412,27 @@ func TestGetAheadBehind(t *testing.T) {
 		t.Errorf("Expected 0/0 for non-existent directory, got %d/%d", ahead, behind)
 	}
 }
+
+func TestGitOpType(t *testing.T) {
+	// Test the GitOp type and its string representation
+	ops := []struct {
+		op   GitOp
+		want string
+	}{
+		{OpFetch, "fetch"},
+		{OpPull, "pull"},
+		{OpPush, "push"},
+	}
+
+	for _, test := range ops {
+		if got := test.op.String(); got != test.want {
+			t.Errorf("GitOp(%v).String() = %q, want %q", test.op, got, test.want)
+		}
+	}
+
+	// Test unknown operation
+	unknown := GitOp(999)
+	if got := unknown.String(); got != "unknown" {
+		t.Errorf("Unknown GitOp.String() = %q, want %q", got, "unknown")
+	}
+}

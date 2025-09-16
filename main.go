@@ -96,21 +96,13 @@ func loadRepository(path string) tea.Cmd {
 }
 
 type gitOperationMsg struct {
-	operation string
+	operation git.GitOp
 	err       error
 }
 
-func doGitOperation(repoPath string, operation string) tea.Cmd {
+func doGitOperation(repoPath string, operation git.GitOp) tea.Cmd {
 	return func() tea.Msg {
-		var err error
-		switch operation {
-		case "fetch":
-			err = git.Fetch(repoPath)
-		case "pull":
-			err = git.Pull(repoPath)
-		case "push":
-			err = git.Push(repoPath)
-		}
+		err := git.ExecuteGitOp(repoPath, operation)
 		return gitOperationMsg{operation: operation, err: err}
 	}
 }
@@ -325,15 +317,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "f":
 			if m.repo != nil {
-				return m, doGitOperation(m.repo.Path, "fetch")
+				return m, doGitOperation(m.repo.Path, git.OpFetch)
 			}
 		case "p":
 			if m.repo != nil {
-				return m, doGitOperation(m.repo.Path, "pull")
+				return m, doGitOperation(m.repo.Path, git.OpPull)
 			}
 		case "P":
 			if m.repo != nil {
-				return m, doGitOperation(m.repo.Path, "push")
+				return m, doGitOperation(m.repo.Path, git.OpPush)
 			}
 		case "r":
 			return m, loadRepository(".")
