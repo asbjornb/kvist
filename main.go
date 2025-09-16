@@ -61,6 +61,8 @@ type model struct {
 	selectedRepo     int
 	scanning         bool
 	lastScanTime     time.Time
+	loadingRepo      bool // true while loading repository basics
+	loadingMetadata  bool // true while loading commits/branches/etc
 
 	// Workspace management state
 	selectedWorkspace int
@@ -96,19 +98,72 @@ type repoLoadedMsg struct {
 	err      error
 }
 
+// Incremental loading messages
+type repoBasicsLoadedMsg struct {
+	repo   *git.Repository
+	status *git.Status
+	err    error
+}
+
+type repoMetadataLoadedMsg struct {
+	commits  []git.Commit
+	branches []git.Branch
+	remotes  []git.Remote
+	stashes  []git.Stash
+	err      error
+}
+
+// Fast loading: repository basics and status for immediate file view
+func loadRepositoryBasics(path string) tea.Cmd {
+	return func() tea.Msg {
+		repo, err := git.OpenRepository(path)
+		if err != nil {
+			return repoBasicsLoadedMsg{err: err}
+		}
+
+		status, err := git.GetStatus(repo.Path)
+		if err != nil {
+			return repoBasicsLoadedMsg{err: err}
+		}
+
+		return repoBasicsLoadedMsg{
+			repo:   repo,
+			status: status,
+		}
+	}
+}
+
+// Slow loading: commits, branches, remotes, stashes for history view
+func loadRepositoryMetadata(path string) tea.Cmd {
+	return func() tea.Msg {
+		commits, _ := git.GetCommits(path, 50)
+		branches, _ := git.GetBranches(path)
+		remotes, _ := git.GetRemotes(path)
+		stashes, _ := git.GetStashes(path)
+
+		return repoMetadataLoadedMsg{
+			commits:  commits,
+			branches: branches,
+			remotes:  remotes,
+			stashes:  stashes,
+		}
+	}
+}
+
+// Legacy function - keep for backward compatibility for now
 func loadRepository(path string) tea.Cmd {
 	return func() tea.Msg {
 		repo, err := git.OpenRepository(path)
 		if err != nil {
 			return repoLoadedMsg{err: err}
 		}
-		
+
 		commits, _ := git.GetCommits(repo.Path, 50)
 		branches, _ := git.GetBranches(repo.Path)
 		status, _ := git.GetStatus(repo.Path)
 		remotes, _ := git.GetRemotes(repo.Path)
 		stashes, _ := git.GetStashes(repo.Path)
-		
+
 		return repoLoadedMsg{
 			repo:     repo,
 			commits:  commits,
@@ -297,6 +352,14 @@ func tickCmd() tea.Cmd {
 	return tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+// Load repository incrementally: fast basics first, then metadata
+func loadRepositoryIncremental(path string) tea.Cmd {
+	return tea.Batch(
+		loadRepositoryBasics(path),
+		loadRepositoryMetadata(path),
+	)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -551,7 +614,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					)
 				}
 			} else {
-				return m, loadRepository(".")
+				// Refresh current repository with incremental loading
+				m.loadingRepo = true
+				m.loadingMetadata = true
+				return m, loadRepositoryIncremental(".")
 			}
 		case "w":
 			if m.currentMode == workspaceMode {
@@ -604,12 +670,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case " ", "enter":
 			if m.currentMode == workspaceMode && len(m.filteredRepos) > 0 && m.selectedRepo < len(m.filteredRepos) {
-				// Switch to selected repository
+				// Switch to selected repository with incremental loading
 				selectedRepo := m.filteredRepos[m.selectedRepo]
 				m.currentMode = filesMode
 				m.selectedFile = 0
 				m.diffScrollOffset = 0
-				return m, loadRepository(selectedRepo.Path)
+				m.loadingRepo = true
+				m.loadingMetadata = true
+				return m, loadRepositoryIncremental(selectedRepo.Path)
 			} else if m.currentMode == workspaceManageMode && m.workspaceConfig != nil {
 				if m.selectedWorkspace == len(m.workspaceConfig.Workspaces) {
 					// "Add New Workspace" selected
@@ -662,6 +730,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			file := m.status.Files[0]
 			return m, loadDiff(m.repo.Path, file.Path, file.Staged != "", file.Unstaged == "untracked")
 		}
+	case repoBasicsLoadedMsg:
+		// Fast loading: repository and status loaded - can show files immediately
+		m.loadingRepo = false
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+
+		m.repo = msg.repo
+		m.status = msg.status
+
+		// Load diff for first file immediately to show something useful
+		if m.currentMode == filesMode && m.repo != nil && m.status != nil && len(m.status.Files) > 0 {
+			file := m.status.Files[0]
+			return m, loadDiff(m.repo.Path, file.Path, file.Staged != "", file.Unstaged == "untracked")
+		}
+	case repoMetadataLoadedMsg:
+		// Slow loading: commits, branches, etc loaded - history view now available
+		m.loadingMetadata = false
+		if msg.err != nil {
+			// Don't overwrite existing error, just log metadata loading failure
+			if m.err == nil {
+				m.err = fmt.Errorf("failed to load repository metadata: %w", msg.err)
+			}
+			return m, nil
+		}
+
+		m.commits = msg.commits
+		m.branches = msg.branches
+		m.remotes = msg.remotes
+		m.stashes = msg.stashes
 	case diffLoadedMsg:
 		if msg.err == nil {
 			m.currentDiff = msg.diff
@@ -704,15 +803,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case gitOperationMsg:
 		if msg.err == nil {
-			return m, loadRepository(".")
+			// Refresh repository with incremental loading
+			m.loadingRepo = true
+			m.loadingMetadata = true
+			return m, loadRepositoryIncremental(".")
 		}
 	case fileOperationMsg:
 		if msg.err == nil {
-			return m, loadRepository(".")
+			// Refresh repository with incremental loading
+			m.loadingRepo = true
+			m.loadingMetadata = true
+			return m, loadRepositoryIncremental(".")
 		}
 	case branchOperationMsg:
 		if msg.err == nil {
-			return m, loadRepository(".")
+			// Refresh repository with incremental loading
+			m.loadingRepo = true
+			m.loadingMetadata = true
+			return m, loadRepositoryIncremental(".")
 		}
 	}
 	return m, nil
@@ -728,8 +836,19 @@ func (m model) View() string {
 	}
 
 	// In workspace modes, we don't need a repo loaded
-	if m.currentMode != workspaceMode && m.currentMode != workspaceManageMode && m.repo == nil {
-		return "\n  Loading repository..."
+	if m.currentMode != workspaceMode && m.currentMode != workspaceManageMode {
+		if m.repo == nil {
+			if m.loadingRepo {
+				return "\n  Loading repository..."
+			} else {
+				return "\n  No repository loaded"
+			}
+		}
+
+		// For history mode, we need commits loaded
+		if m.currentMode == historyMode && m.commits == nil && m.loadingMetadata {
+			return "\n  Loading commit history..."
+		}
 	}
 
 	headerHeight := 3
@@ -876,23 +995,27 @@ func (m model) renderHeader() string {
 		branchName := m.repo.CurrentBranch
 
 		// Add ahead/behind indicators if available
-		for _, branch := range m.branches {
-			if branch.IsCurrent && (branch.Ahead > 0 || branch.Behind > 0) {
-				indicators := ""
-				if branch.Ahead > 0 {
-					indicators += fmt.Sprintf("↑%d", branch.Ahead)
-				}
-				if branch.Behind > 0 {
-					if indicators != "" {
-						indicators += " "
+		if m.branches != nil {
+			for _, branch := range m.branches {
+				if branch.IsCurrent && (branch.Ahead > 0 || branch.Behind > 0) {
+					indicators := ""
+					if branch.Ahead > 0 {
+						indicators += fmt.Sprintf("↑%d", branch.Ahead)
 					}
-					indicators += fmt.Sprintf("↓%d", branch.Behind)
+					if branch.Behind > 0 {
+						if indicators != "" {
+							indicators += " "
+						}
+						indicators += fmt.Sprintf("↓%d", branch.Behind)
+					}
+					if indicators != "" {
+						branchName += " " + indicators
+					}
+					break
 				}
-				if indicators != "" {
-					branchName += " " + indicators
-				}
-				break
 			}
+		} else if m.loadingMetadata {
+			branchName += " (loading...)"
 		}
 
 		repo = fmt.Sprintf("📁 %s  🌿 %s", m.repo.Name, branchName)
