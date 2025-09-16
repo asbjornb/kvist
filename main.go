@@ -69,6 +69,9 @@ type model struct {
 	newWorkspacePath  string
 	editingField      int  // 0 = name, 1 = path
 	currentWorkspace  *workspace.Workspace // currently selected workspace
+	filterText        string               // filter text for repo search
+	filteredRepos     []workspace.RepoInfo // filtered list of repos
+	scrollOffset      int                  // scroll offset for repo list
 }
 
 func initialModel() model {
@@ -409,7 +412,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		
+
+		// Handle filtering in workspace mode
+		if m.currentMode == workspaceMode && !m.editingWorkspace {
+			switch msg.String() {
+			case "backspace":
+				if len(m.filterText) > 0 {
+					m.filterText = m.filterText[:len(m.filterText)-1]
+					m.updateFilteredRepos()
+				}
+				return m, nil
+			case "ctrl+c", "esc":
+				if m.filterText != "" {
+					m.filterText = ""
+					m.updateFilteredRepos()
+					return m, nil
+				}
+			default:
+				// Add printable characters to filter
+				if len(msg.String()) == 1 && msg.String()[0] >= 32 && msg.String()[0] <= 126 {
+					// Skip common navigation keys
+					if msg.String() != " " {
+						m.filterText += msg.String()
+						m.updateFilteredRepos()
+						return m, nil
+					}
+				}
+			}
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -449,7 +480,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch m.activePanel {
 			case topPanel:
 				if m.currentMode == workspaceMode {
-					if m.selectedRepo < len(m.repos)-1 {
+					if len(m.filteredRepos) == 0 {
+						m.updateFilteredRepos() // Ensure filtered list is initialized
+					}
+					if m.selectedRepo < len(m.filteredRepos)-1 {
 						m.selectedRepo++
 					}
 				} else if m.currentMode == workspaceManageMode {
@@ -559,9 +593,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.selectedBranchMenu = 0
 			}
 		case " ", "enter":
-			if m.currentMode == workspaceMode && len(m.repos) > 0 && m.selectedRepo < len(m.repos) {
+			if m.currentMode == workspaceMode && len(m.filteredRepos) > 0 && m.selectedRepo < len(m.filteredRepos) {
 				// Switch to selected repository
-				selectedRepo := m.repos[m.selectedRepo]
+				selectedRepo := m.filteredRepos[m.selectedRepo]
 				m.currentMode = filesMode
 				m.selectedFile = 0
 				m.diffScrollOffset = 0
@@ -650,6 +684,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Show all repos when no specific workspace is selected
 				m.repos = msg.repos
 			}
+			// Update filtered list
+			m.updateFilteredRepos()
 		}
 	case tickMsg:
 		// Continue ticking if scanning or editing workspace
@@ -1354,51 +1390,92 @@ func (m model) renderWorkspaces(width, height int) string {
 			lastScan = fmt.Sprintf(" • Last scan: %s ago", formatRelativeTime(m.lastScanTime))
 		}
 
+		totalRepos := len(m.repos)
+		displayedRepos := len(m.filteredRepos)
+
 		if m.currentWorkspace != nil {
-			return fmt.Sprintf("📂 %s (%d repos)%s", m.currentWorkspace.Name, len(m.repos), lastScan)
+			if m.filterText != "" {
+				return fmt.Sprintf("📂 %s (%d/%d repos)%s", m.currentWorkspace.Name, displayedRepos, totalRepos, lastScan)
+			}
+			return fmt.Sprintf("📂 %s (%d repos)%s", m.currentWorkspace.Name, totalRepos, lastScan)
 		}
-		return fmt.Sprintf("📁 All Repositories (%d)%s", len(m.repos), lastScan)
+		if m.filterText != "" {
+			return fmt.Sprintf("📁 All Repositories (%d/%d)%s", displayedRepos, totalRepos, lastScan)
+		}
+		return fmt.Sprintf("📁 All Repositories (%d)%s", totalRepos, lastScan)
 	}())
 
 	content := []string{title, ""}
 
-	if len(m.repos) == 0 {
+	// Initialize filtered repos if needed
+	if len(m.filteredRepos) == 0 && len(m.repos) > 0 {
+		m.updateFilteredRepos()
+	}
+
+	// Show filter text if active
+	if m.filterText != "" {
+		filterStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+		content = append(content, filterStyle.Render(fmt.Sprintf("Filter: %s", m.filterText)))
+		content = append(content, "")
+	}
+
+	if len(m.filteredRepos) == 0 {
 		if !m.scanning {
-			if m.workspaceConfig != nil && len(m.workspaceConfig.Workspaces) == 0 {
-				// No workspaces configured - guide user to setup
-				content = append(content, itemStyle.Render("👋 Welcome to kvist!"))
-				content = append(content, itemStyle.Render(""))
-				content = append(content, itemStyle.Render("No workspaces configured yet."))
-				content = append(content, itemStyle.Render(""))
-				content = append(content, itemStyle.Render("🎯 Press 'w' to add your first workspace"))
-				content = append(content, itemStyle.Render(""))
-				content = append(content, itemStyle.Render("A workspace is a directory containing your Git repositories"))
-				content = append(content, itemStyle.Render("(e.g., ~/code, ~/projects, /mnt/c/code)"))
-			} else {
-				// Workspaces configured but no repos found
-				content = append(content, itemStyle.Render("No repositories found"))
-				content = append(content, itemStyle.Render(""))
-				if m.currentWorkspace != nil {
-					content = append(content, itemStyle.Render(fmt.Sprintf("Press 'r' to scan workspace '%s'", m.currentWorkspace.Name)))
+			if len(m.repos) == 0 {
+				if m.workspaceConfig != nil && len(m.workspaceConfig.Workspaces) == 0 {
+					// No workspaces configured - guide user to setup
+					content = append(content, itemStyle.Render("👋 Welcome to kvist!"))
+					content = append(content, itemStyle.Render(""))
+					content = append(content, itemStyle.Render("No workspaces configured yet."))
+					content = append(content, itemStyle.Render(""))
+					content = append(content, itemStyle.Render("🎯 Press 'w' to add your first workspace"))
+					content = append(content, itemStyle.Render(""))
+					content = append(content, itemStyle.Render("A workspace is a directory containing your Git repositories"))
+					content = append(content, itemStyle.Render("(e.g., ~/code, ~/projects, /mnt/c/code)"))
 				} else {
-					content = append(content, itemStyle.Render("Press 'w' to select a workspace, then press 'r' to scan"))
+					// Workspaces configured but no repos found
+					content = append(content, itemStyle.Render("No repositories found"))
+					content = append(content, itemStyle.Render(""))
+					if m.currentWorkspace != nil {
+						content = append(content, itemStyle.Render(fmt.Sprintf("Press 'r' to scan workspace '%s'", m.currentWorkspace.Name)))
+					} else {
+						content = append(content, itemStyle.Render("Press 'w' to select a workspace, then press 'r' to scan"))
+					}
 				}
+			} else {
+				// Filtering resulted in no matches
+				content = append(content, itemStyle.Render("No repositories match your filter"))
+				content = append(content, itemStyle.Render("Press Esc to clear filter"))
 			}
 		}
 	} else {
-		currentWorkspace := ""
-		for i, repo := range m.repos {
-			if len(content) >= height-3 {
-				break
-			}
+		// Calculate scrolling bounds
+		visibleItems := height - len(content) - 3 // Reserve space for title and margins
 
-			// Add workspace header if changed
-			if repo.WorkspaceName != currentWorkspace {
+		// Calculate scroll window
+		startIdx := 0
+		if m.selectedRepo >= visibleItems {
+			startIdx = m.selectedRepo - visibleItems + 1
+		}
+		endIdx := startIdx + visibleItems
+		if endIdx > len(m.filteredRepos) {
+			endIdx = len(m.filteredRepos)
+		}
+
+		currentWorkspace := ""
+		displayIndex := 0
+
+		for i, repo := range m.filteredRepos[startIdx:endIdx] {
+			actualIndex := startIdx + i
+
+			// Add workspace header if changed (only for multi-workspace view)
+			if m.currentWorkspace == nil && repo.WorkspaceName != currentWorkspace {
 				currentWorkspace = repo.WorkspaceName
-				if len(content) > 2 { // Add spacing between workspaces
+				if displayIndex > 0 { // Add spacing between workspaces
 					content = append(content, "")
 				}
 				content = append(content, workspaceStyle.Render("📂 "+currentWorkspace))
+				displayIndex++
 			}
 
 			// Format repo line
@@ -1436,12 +1513,20 @@ func (m model) renderWorkspaces(width, height int) string {
 
 			// Apply selection style
 			var line string
-			if i == m.selectedRepo {
+			if actualIndex == m.selectedRepo {
 				line = selectedStyle.Render(repoLine)
 			} else {
 				line = itemStyle.Render(repoLine)
 			}
 			content = append(content, line)
+			displayIndex++
+		}
+
+		// Show scroll indicators if needed
+		if startIdx > 0 || endIdx < len(m.filteredRepos) {
+			scrollInfo := fmt.Sprintf("(%d-%d of %d)", startIdx+1, endIdx, len(m.filteredRepos))
+			scrollStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+			content = append(content, scrollStyle.Render(scrollInfo))
 		}
 	}
 
@@ -1476,10 +1561,10 @@ func (m model) renderRepoDetails(width, height int) string {
 
 	content := []string{titleStyle.Render("📋 Repository Details"), ""}
 
-	if len(m.repos) == 0 || m.selectedRepo >= len(m.repos) {
+	if len(m.filteredRepos) == 0 || m.selectedRepo >= len(m.filteredRepos) {
 		content = append(content, "No repository selected")
 	} else {
-		repo := m.repos[m.selectedRepo]
+		repo := m.filteredRepos[m.selectedRepo]
 
 		content = append(content,
 			labelStyle.Render("Name: ")+valueStyle.Render(repo.Name),
@@ -1518,6 +1603,29 @@ func (m model) renderRepoDetails(width, height int) string {
 	}
 
 	return panelStyle.Render(strings.Join(content, "\n"))
+}
+
+func (m *model) updateFilteredRepos() {
+	if m.filterText == "" {
+		m.filteredRepos = m.repos
+	} else {
+		m.filteredRepos = make([]workspace.RepoInfo, 0)
+		filter := strings.ToLower(m.filterText)
+		for _, repo := range m.repos {
+			if strings.Contains(strings.ToLower(repo.Name), filter) ||
+				strings.Contains(strings.ToLower(repo.Path), filter) {
+				m.filteredRepos = append(m.filteredRepos, repo)
+			}
+		}
+	}
+
+	// Adjust selection if it's out of bounds
+	if m.selectedRepo >= len(m.filteredRepos) {
+		m.selectedRepo = len(m.filteredRepos) - 1
+	}
+	if m.selectedRepo < 0 {
+		m.selectedRepo = 0
+	}
 }
 
 func formatRelativeTime(t time.Time) string {
