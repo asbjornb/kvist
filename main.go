@@ -29,6 +29,12 @@ const (
 	filesMode                           // showing files + diff
 )
 
+type modalType int
+
+const (
+	workspacePickerModal modalType = iota // workspace selection modal
+)
+
 type model struct {
 	width      int
 	height     int
@@ -75,6 +81,10 @@ type model struct {
 	filterText        string               // filter text for repo search
 	filteredRepos     []workspace.RepoInfo // filtered list of repos
 	scrollOffset      int                  // scroll offset for repo list
+
+	// Modal state
+	showingModal      bool // whether modal is displayed
+	modalMode         modalType // what type of modal to show
 }
 
 func initialModel() model {
@@ -520,6 +530,127 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		// Handle modal input first
+		if m.showingModal {
+			switch msg.String() {
+			case "ctrl+c", "esc", "q":
+				// Close modal
+				m.showingModal = false
+				return m, nil
+			case "up", "k":
+				if m.modalMode == workspacePickerModal {
+					if m.selectedWorkspace > 0 {
+						m.selectedWorkspace--
+					}
+				}
+			case "down", "j":
+				if m.modalMode == workspacePickerModal {
+					maxWorkspaces := len(m.workspaceConfig.Workspaces)
+					if m.editingWorkspace {
+						// When editing, don't allow selection beyond actual workspaces
+					} else {
+						maxWorkspaces++ // Add 1 for "Add New Workspace" option
+					}
+					if m.selectedWorkspace < maxWorkspaces-1 {
+						m.selectedWorkspace++
+					}
+				}
+			case " ", "enter":
+				if m.modalMode == workspacePickerModal && m.workspaceConfig != nil {
+					if m.editingWorkspace {
+						// Create new workspace
+						if m.newWorkspaceName != "" && m.newWorkspacePath != "" {
+							err := m.workspaceConfig.AddWorkspace(m.newWorkspaceName, m.newWorkspacePath)
+							if err != nil {
+								m.err = err
+							} else {
+								// Find the newly added workspace and select it
+								for i, ws := range m.workspaceConfig.Workspaces {
+									if ws.Name == m.newWorkspaceName {
+										m.currentWorkspace = &m.workspaceConfig.Workspaces[i]
+										break
+									}
+								}
+
+								// Track this as the last accessed workspace
+								if m.scanner != nil {
+									m.scanner.UpdateLastWorkspace(m.currentWorkspace.Name)
+									// Save state to disk (best effort, don't block on errors)
+									go func() {
+										if cache := m.scanner.GetCache(); cache != nil {
+											cache.Save()
+										}
+									}()
+								}
+
+								// Close modal and load repos
+								m.showingModal = false
+								m.editingWorkspace = false
+
+								if m.scanner != nil {
+									m.repos = m.scanner.GetCachedRepos()
+									m.updateFilteredRepos()
+								}
+							}
+						}
+					} else if m.selectedWorkspace == len(m.workspaceConfig.Workspaces) {
+						// "Add New Workspace" selected
+						m.editingWorkspace = true
+						m.newWorkspaceName = ""
+						m.newWorkspacePath = ""
+						m.editingField = 0 // Start with name field
+						return m, tickCmd() // Continue ticking for cursor animation
+					} else if m.selectedWorkspace < len(m.workspaceConfig.Workspaces) {
+						// Open workspace - show repos from this workspace only
+						m.currentWorkspace = &m.workspaceConfig.Workspaces[m.selectedWorkspace]
+						m.showingModal = false // Close modal
+
+						// Track this as the last accessed workspace
+						if m.scanner != nil {
+							m.scanner.UpdateLastWorkspace(m.currentWorkspace.Name)
+							// Save state to disk (best effort, don't block on errors)
+							go func() {
+								if cache := m.scanner.GetCache(); cache != nil {
+									cache.Save()
+								}
+							}()
+						}
+
+						// Load all cached repos and let updateFilteredRepos() handle workspace filtering
+						if m.scanner != nil {
+							m.repos = m.scanner.GetCachedRepos()
+							m.updateFilteredRepos()
+						}
+					}
+				}
+			case "tab":
+				// Switch between name and path fields when editing
+				if m.modalMode == workspacePickerModal && m.editingWorkspace {
+					m.editingField = (m.editingField + 1) % 2
+				}
+			case "backspace":
+				if m.modalMode == workspacePickerModal && m.editingWorkspace {
+					if m.editingField == 0 && len(m.newWorkspaceName) > 0 {
+						m.newWorkspaceName = m.newWorkspaceName[:len(m.newWorkspaceName)-1]
+					} else if m.editingField == 1 && len(m.newWorkspacePath) > 0 {
+						m.newWorkspacePath = m.newWorkspacePath[:len(m.newWorkspacePath)-1]
+					}
+				}
+			default:
+				// Handle text input for workspace editing
+				if m.modalMode == workspacePickerModal && m.editingWorkspace {
+					if len(msg.String()) == 1 && msg.String()[0] >= 32 && msg.String()[0] <= 126 {
+						if m.editingField == 0 {
+							m.newWorkspaceName += msg.String()
+						} else {
+							m.newWorkspacePath += msg.String()
+						}
+					}
+				}
+			}
+			return m, nil // Modal consumes all input
+		}
+
 		switch msg.String() {
 		case "ctrl+c", "q":
 			return m, tea.Quit
@@ -635,13 +766,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "w":
 			if m.currentMode == workspaceMode {
-				// Toggle to workspace management mode
-				m.currentMode = workspaceManageMode
+				// Show workspace picker modal
+				m.showingModal = true
+				m.modalMode = workspacePickerModal
 				m.selectedWorkspace = 0
 				m.editingWorkspace = false
 				m.newWorkspaceName = ""
 				m.newWorkspacePath = ""
 				m.editingField = 0
+				return m, tickCmd() // Start ticking for cursor animation
 			} else {
 				// Go to workspace mode
 				m.currentMode = workspaceMode
@@ -823,8 +956,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateFilteredRepos()
 		}
 	case tickMsg:
-		// Continue ticking if scanning, editing workspace, or in search mode
-		if m.scanning || m.editingWorkspace || m.searchMode {
+		// Continue ticking if scanning, editing workspace, in search mode, or showing modal
+		if m.scanning || m.editingWorkspace || m.searchMode || m.showingModal {
 			return m, tickCmd()
 		}
 	case gitOperationMsg:
@@ -969,6 +1102,11 @@ func (m model) View() string {
 				strings.Repeat("\n", overlayTop) + overlay)
 	}
 
+	// Show modal overlay
+	if m.showingModal {
+		return m.renderModalOverlay(result)
+	}
+
 	return result
 }
 
@@ -1056,6 +1194,91 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func (m model) renderModalOverlay(background string) string {
+	modalStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("170")).
+		Background(lipgloss.Color("235")).
+		Padding(1).
+		Width(70).
+		Height(min(15, m.height-4))
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("170")).
+		Align(lipgloss.Center)
+
+	itemStyle := lipgloss.NewStyle().
+		PaddingLeft(2)
+
+	selectedStyle := lipgloss.NewStyle().
+		PaddingLeft(1).
+		Background(lipgloss.Color("238")).
+		Foreground(lipgloss.Color("170")).
+		Bold(true)
+
+	switch m.modalMode {
+	case workspacePickerModal:
+		title := titleStyle.Render("📂 Select Workspace")
+		content := []string{title, ""}
+
+		if m.editingWorkspace {
+			// Show workspace creation form
+			nameLabel := "Name:"
+			pathLabel := "Path:"
+
+			nameCursor := ""
+			pathCursor := ""
+			if m.editingField == 0 {
+				nameCursor = "█"
+			} else {
+				pathCursor = "█"
+			}
+
+			content = append(content,
+				fmt.Sprintf("  %s %s%s", nameLabel, m.newWorkspaceName, nameCursor),
+				fmt.Sprintf("  %s %s%s", pathLabel, m.newWorkspacePath, pathCursor),
+				"",
+				"  Tab: next field • Enter: create • Esc: cancel",
+			)
+		} else {
+			// Show workspace list
+			if m.workspaceConfig != nil {
+				for i, ws := range m.workspaceConfig.Workspaces {
+					text := fmt.Sprintf("📂 %s (%s)", ws.Name, ws.Path)
+					if i == m.selectedWorkspace {
+						content = append(content, selectedStyle.Render("▶ "+text))
+					} else {
+						content = append(content, itemStyle.Render("  "+text))
+					}
+				}
+
+				// Add "New Workspace" option
+				addText := "➕ Add New Workspace"
+				if m.selectedWorkspace == len(m.workspaceConfig.Workspaces) {
+					content = append(content, selectedStyle.Render("▶ "+addText))
+				} else {
+					content = append(content, itemStyle.Render("  "+addText))
+				}
+			}
+
+			content = append(content, "", "  Enter: select • Esc: close")
+		}
+
+		modal := modalStyle.Render(strings.Join(content, "\n"))
+
+		// Position modal in center
+		overlayHeight := modalStyle.GetHeight()
+		overlayTop := (m.height - overlayHeight) / 2
+
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, background) +
+			lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top,
+				strings.Repeat("\n", overlayTop) + modal)
+	}
+
+	return background
 }
 
 func (m model) renderHeader() string {
