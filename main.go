@@ -704,16 +704,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Open workspace - show repos from this workspace only
 					m.currentWorkspace = &m.workspaceConfig.Workspaces[m.selectedWorkspace]
 					m.currentMode = workspaceMode
-					// Filter repos to show only from this workspace
+					// Load all cached repos and let updateFilteredRepos() handle workspace filtering
 					if m.scanner != nil {
-						allRepos := m.scanner.GetCachedRepos()
-						var workspaceRepos []workspace.RepoInfo
-						for _, repo := range allRepos {
-							if repo.WorkspaceName == m.currentWorkspace.Name {
-								workspaceRepos = append(workspaceRepos, repo)
-							}
-						}
-						m.repos = workspaceRepos
+						m.repos = m.scanner.GetCachedRepos()
+						m.updateFilteredRepos()
 					}
 				}
 			} else if m.activePanel == topPanel && m.currentMode == filesMode && m.status != nil && m.selectedFile < len(m.status.Files) {
@@ -794,20 +788,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scanning = false
 		m.lastScanTime = time.Now()
 		if msg.err == nil {
-			if m.currentWorkspace != nil {
-				// Filter repos to show only from current workspace
-				var workspaceRepos []workspace.RepoInfo
-				for _, repo := range msg.repos {
-					if repo.WorkspaceName == m.currentWorkspace.Name {
-						workspaceRepos = append(workspaceRepos, repo)
-					}
-				}
-				m.repos = workspaceRepos
-			} else {
-				// Show all repos when no specific workspace is selected
-				m.repos = msg.repos
-			}
-			// Update filtered list
+			// Always load the complete cached repo list
+			// Let updateFilteredRepos() handle workspace filtering for display
+			m.repos = m.scanner.GetCachedRepos()
 			m.updateFilteredRepos()
 		}
 	case tickMsg:
@@ -1763,12 +1746,28 @@ func (m model) renderRepoDetails(width, height int) string {
 }
 
 func (m *model) updateFilteredRepos() {
+	// Start with all repos
+	var candidateRepos []workspace.RepoInfo
+
+	// First, filter by workspace if we're in a specific workspace
+	if m.currentWorkspace != nil {
+		for _, repo := range m.repos {
+			if repo.WorkspaceName == m.currentWorkspace.Name {
+				candidateRepos = append(candidateRepos, repo)
+			}
+		}
+	} else {
+		// No specific workspace selected, use all repos
+		candidateRepos = m.repos
+	}
+
+	// Then apply text filtering on the workspace-filtered results
 	if m.filterText == "" {
-		m.filteredRepos = m.repos
+		m.filteredRepos = candidateRepos
 	} else {
 		m.filteredRepos = make([]workspace.RepoInfo, 0)
 		filter := strings.ToLower(m.filterText)
-		for _, repo := range m.repos {
+		for _, repo := range candidateRepos {
 			if strings.Contains(strings.ToLower(repo.Name), filter) ||
 				strings.Contains(strings.ToLower(repo.Path), filter) {
 				m.filteredRepos = append(m.filteredRepos, repo)
