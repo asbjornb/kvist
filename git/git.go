@@ -195,7 +195,8 @@ func GetBranches(repoPath string) ([]Branch, error) {
 		
 		var ahead, behind int
 		if isCurrent && !strings.Contains(name, "(remote)") {
-			ahead, behind = getAheadBehind(repoPath, name)
+			// Only get ahead/behind for the current branch
+			ahead, behind, _ = getAheadBehind(repoPath)
 		}
 		
 		branches = append(branches, Branch{
@@ -208,23 +209,26 @@ func GetBranches(repoPath string) ([]Branch, error) {
 	return branches, nil
 }
 
-func getAheadBehind(repoPath string, branch string) (int, int) {
-	cmd := exec.Command("git", "rev-list", "--left-right", "--count", "origin/"+branch+"...HEAD")
-	cmd.Dir = repoPath
-	output, err := cmd.Output()
+func getAheadBehind(repoPath string) (ahead, behind int, ok bool) {
+	// Get the upstream branch reference
+	up, err := runGitAllowExit1(repoPath, "rev-parse", "--abbrev-ref", "@{u}")
+	if err != nil || strings.TrimSpace(up) == "@{u}" {
+		return 0, 0, false // no upstream
+	}
+
+	// Get ahead/behind counts
+	out, err := runGitAllowExit1(repoPath, "rev-list", "--left-right", "--count", strings.TrimSpace(up)+"...HEAD")
 	if err != nil {
-		return 0, 0
+		return 0, 0, false
 	}
-	
-	parts := strings.Fields(strings.TrimSpace(string(output)))
+
+	parts := strings.Fields(strings.TrimSpace(out))
 	if len(parts) >= 2 {
-		behind := 0
-		ahead := 0
-		fmt.Sscanf(parts[0], "%d", &behind)
-		fmt.Sscanf(parts[1], "%d", &ahead)
-		return ahead, behind
+		behind, _ = strconv.Atoi(parts[0])
+		ahead, _ = strconv.Atoi(parts[1])
+		return ahead, behind, true
 	}
-	return 0, 0
+	return 0, 0, false
 }
 
 type Branch struct {

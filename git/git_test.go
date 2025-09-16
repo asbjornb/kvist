@@ -355,3 +355,60 @@ func TestRunGitAllowExit1(t *testing.T) {
 
 	t.Logf("Diff output length: %d chars", len(output))
 }
+
+func TestGetBranches(t *testing.T) {
+	// Test GetBranches to ensure it uses the new getAheadBehind
+	branches, err := GetBranches("..")
+	if err != nil {
+		t.Fatalf("GetBranches failed: %v", err)
+	}
+
+	if len(branches) == 0 {
+		t.Fatalf("Expected at least one branch")
+	}
+
+	// Find the current branch
+	var currentBranch *Branch
+	for i := range branches {
+		if branches[i].IsCurrent {
+			currentBranch = &branches[i]
+			break
+		}
+	}
+
+	if currentBranch == nil {
+		t.Fatalf("No current branch found")
+	}
+
+	t.Logf("Current branch: %s", currentBranch.Name)
+	t.Logf("Ahead: %d, Behind: %d", currentBranch.Ahead, currentBranch.Behind)
+
+	// The branch should have ahead/behind info if it has an upstream
+	if currentBranch.Ahead == 0 && currentBranch.Behind == 0 {
+		t.Logf("Current branch has no ahead/behind (likely no upstream)")
+	} else {
+		t.Logf("Current branch tracking info found: %d ahead, %d behind",
+			currentBranch.Ahead, currentBranch.Behind)
+	}
+}
+
+func TestGetAheadBehind(t *testing.T) {
+	// Test in the current repo
+	ahead, behind, ok := getAheadBehind("..")
+
+	// Log results - may or may not have upstream
+	if ok {
+		t.Logf("Current branch is %d ahead, %d behind upstream", ahead, behind)
+	} else {
+		t.Logf("Current branch has no upstream configured")
+	}
+
+	// Test with a non-existent directory (should return false)
+	ahead, behind, ok = getAheadBehind("/nonexistent")
+	if ok {
+		t.Errorf("Expected no upstream for non-existent directory")
+	}
+	if ahead != 0 || behind != 0 {
+		t.Errorf("Expected 0/0 for non-existent directory, got %d/%d", ahead, behind)
+	}
+}
