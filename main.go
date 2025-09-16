@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/asbjornb/kvist/git"
+	"github.com/asbjornb/kvist/workspace"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -20,8 +23,10 @@ const (
 type viewMode int
 
 const (
-	historyMode viewMode = iota  // showing commits + details
-	filesMode                   // showing files + diff
+	workspaceMode       viewMode = iota // showing workspaces + repos
+	workspaceManageMode                 // managing workspaces (add/edit/delete)
+	historyMode                         // showing commits + details
+	filesMode                           // showing files + diff
 )
 
 type model struct {
@@ -48,17 +53,32 @@ type model struct {
 	// Diff view state
 	currentDiff    string
 	diffScrollOffset int
+	// Workspace state
+	workspaceConfig  *workspace.Config
+	repoCache        *workspace.RepoCache
+	scanner          *workspace.Scanner
+	repos            []workspace.RepoInfo
+	selectedRepo     int
+	scanning         bool
+	lastScanTime     time.Time
+
+	// Workspace management state
+	selectedWorkspace int
+	editingWorkspace  bool
+	newWorkspaceName  string
+	newWorkspacePath  string
+	editingField      int  // 0 = name, 1 = path
 }
 
 func initialModel() model {
 	return model{
 		activePanel: topPanel,
-		currentMode: filesMode,
+		currentMode: workspaceMode,
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return loadRepository(".")
+	return loadWorkspaceConfig
 }
 
 type repoLoadedMsg struct {
@@ -150,6 +170,19 @@ type diffLoadedMsg struct {
 	err  error
 }
 
+type workspaceConfigMsg struct {
+	config *workspace.Config
+	cache  *workspace.RepoCache
+	err    error
+}
+
+type workspaceScanMsg struct {
+	repos []workspace.RepoInfo
+	err   error
+}
+
+type tickMsg time.Time
+
 func loadDiff(repoPath string, filePath string, staged bool, isUntracked bool) tea.Cmd {
 	return func() tea.Msg {
 		if isUntracked {
@@ -191,6 +224,39 @@ func loadDiff(repoPath string, filePath string, staged bool, isUntracked bool) t
 
 		return diffLoadedMsg{diff: diff, err: nil}
 	}
+}
+
+func loadWorkspaceConfig() tea.Msg {
+	config, err := workspace.LoadConfig()
+	if err != nil {
+		return workspaceConfigMsg{err: err}
+	}
+
+	cache, err := workspace.LoadRepoCache()
+	if err != nil {
+		return workspaceConfigMsg{err: err}
+	}
+
+	return workspaceConfigMsg{config: config, cache: cache}
+}
+
+func scanWorkspaces(config *workspace.Config, cache *workspace.RepoCache) tea.Cmd {
+	return func() tea.Msg {
+		scanner := workspace.NewScanner(config, cache)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		results := scanner.ScanWorkspaces(ctx)
+		result := <-results
+
+		return workspaceScanMsg{repos: result.Repos, err: result.Error}
+	}
+}
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(time.Millisecond*100, func(t time.Time) tea.Msg {
+		return tickMsg(t)
+	})
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -257,6 +323,57 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+
+		// Handle workspace editing input
+		if m.editingWorkspace {
+			switch msg.String() {
+			case "ctrl+c", "esc":
+				m.editingWorkspace = false
+				m.newWorkspaceName = ""
+				m.newWorkspacePath = ""
+				m.editingField = 0
+			case "tab":
+				// Switch between name and path fields
+				m.editingField = (m.editingField + 1) % 2
+			case "enter":
+				if m.newWorkspaceName != "" && m.newWorkspacePath != "" && m.workspaceConfig != nil {
+					// Add new workspace
+					newWorkspace := workspace.Workspace{
+						Name:    m.newWorkspaceName,
+						Path:    m.newWorkspacePath,
+						Enabled: true,
+					}
+					m.workspaceConfig.Workspaces = append(m.workspaceConfig.Workspaces, newWorkspace)
+					if err := m.workspaceConfig.Save(); err == nil {
+						m.editingWorkspace = false
+						m.newWorkspaceName = ""
+						m.newWorkspacePath = ""
+						m.editingField = 0
+						// Refresh repos if we have a scanner
+						if m.scanner != nil {
+							m.repos = m.scanner.GetCachedRepos()
+						}
+					}
+				}
+			case "backspace":
+				// Remove from the active field
+				if m.editingField == 0 && len(m.newWorkspaceName) > 0 {
+					m.newWorkspaceName = m.newWorkspaceName[:len(m.newWorkspaceName)-1]
+				} else if m.editingField == 1 && len(m.newWorkspacePath) > 0 {
+					m.newWorkspacePath = m.newWorkspacePath[:len(m.newWorkspacePath)-1]
+				}
+			default:
+				// Add printable characters to the active field
+				if len(msg.String()) == 1 && msg.String()[0] >= 32 && msg.String()[0] <= 126 {
+					if m.editingField == 0 {
+						m.newWorkspaceName += msg.String()
+					} else {
+						m.newWorkspacePath += msg.String()
+					}
+				}
+			}
+			return m, nil
+		}
 		
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -266,7 +383,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "up", "k":
 			switch m.activePanel {
 			case topPanel:
-				if m.currentMode == historyMode {
+				if m.currentMode == workspaceMode {
+					if m.selectedRepo > 0 {
+						m.selectedRepo--
+					}
+				} else if m.currentMode == workspaceManageMode {
+					if m.selectedWorkspace > 0 {
+						m.selectedWorkspace--
+					}
+				} else if m.currentMode == historyMode {
 					if m.selectedCommit > 0 {
 						m.selectedCommit--
 					}
@@ -288,7 +413,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "down", "j":
 			switch m.activePanel {
 			case topPanel:
-				if m.currentMode == historyMode {
+				if m.currentMode == workspaceMode {
+					if m.selectedRepo < len(m.repos)-1 {
+						m.selectedRepo++
+					}
+				} else if m.currentMode == workspaceManageMode {
+					maxItems := len(m.workspaceConfig.Workspaces) + 1 // +1 for "Add New Workspace"
+					if m.selectedWorkspace < maxItems-1 {
+						m.selectedWorkspace++
+					}
+				} else if m.currentMode == historyMode {
 					if m.selectedCommit < len(m.commits)-1 {
 						m.selectedCommit++
 					}
@@ -328,20 +462,86 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, doGitOperation(m.repo.Path, git.OpPush)
 			}
 		case "r":
-			return m, loadRepository(".")
+			if m.currentMode == workspaceMode {
+				// Refresh workspace scan
+				if m.workspaceConfig != nil && m.repoCache != nil {
+					m.scanning = true
+					return m, tea.Batch(
+						scanWorkspaces(m.workspaceConfig, m.repoCache),
+						tickCmd(),
+					)
+				}
+			} else {
+				return m, loadRepository(".")
+			}
+		case "w":
+			if m.currentMode == workspaceMode {
+				// Toggle to workspace management mode
+				m.currentMode = workspaceManageMode
+				m.selectedWorkspace = 0
+				m.editingWorkspace = false
+				m.newWorkspaceName = ""
+				m.newWorkspacePath = ""
+				m.editingField = 0
+			} else {
+				// Go to workspace mode
+				m.currentMode = workspaceMode
+				m.currentDiff = ""
+			}
 		case "h":
 			m.currentMode = historyMode
 			m.currentDiff = "" // Clear diff when switching to history mode
 		case "s":
 			m.currentMode = filesMode
 			m.diffScrollOffset = 0 // Reset scroll when switching to files mode
+		case "d":
+			if m.currentMode == workspaceManageMode && m.workspaceConfig != nil && m.selectedWorkspace < len(m.workspaceConfig.Workspaces) {
+				// Delete selected workspace
+				workspaces := m.workspaceConfig.Workspaces
+				m.workspaceConfig.Workspaces = append(workspaces[:m.selectedWorkspace], workspaces[m.selectedWorkspace+1:]...)
+				if err := m.workspaceConfig.Save(); err == nil {
+					// Adjust selection if needed
+					if m.selectedWorkspace >= len(m.workspaceConfig.Workspaces) && m.selectedWorkspace > 0 {
+						m.selectedWorkspace--
+					}
+					// Refresh repos if we have a scanner
+					if m.scanner != nil {
+						m.repos = m.scanner.GetCachedRepos()
+					}
+				}
+			}
 		case "b":
 			if m.repo != nil {
 				m.showingBranchMenu = true
 				m.selectedBranchMenu = 0
 			}
 		case " ", "enter":
-			if m.activePanel == topPanel && m.currentMode == filesMode && m.status != nil && m.selectedFile < len(m.status.Files) {
+			if m.currentMode == workspaceMode && len(m.repos) > 0 && m.selectedRepo < len(m.repos) {
+				// Switch to selected repository
+				selectedRepo := m.repos[m.selectedRepo]
+				m.currentMode = filesMode
+				m.selectedFile = 0
+				m.diffScrollOffset = 0
+				return m, loadRepository(selectedRepo.Path)
+			} else if m.currentMode == workspaceManageMode && m.workspaceConfig != nil {
+				if m.selectedWorkspace == len(m.workspaceConfig.Workspaces) {
+					// "Add New Workspace" selected
+					m.editingWorkspace = true
+					m.newWorkspaceName = ""
+					m.newWorkspacePath = ""
+					m.editingField = 0 // Start with name field
+				} else if m.selectedWorkspace < len(m.workspaceConfig.Workspaces) {
+					// Toggle workspace enabled/disabled
+					workspace := &m.workspaceConfig.Workspaces[m.selectedWorkspace]
+					workspace.Enabled = !workspace.Enabled
+					if err := m.workspaceConfig.Save(); err == nil {
+						// Refresh repos if we have a scanner
+						if m.scanner != nil {
+							m.repos = m.scanner.GetCachedRepos()
+						}
+					}
+				}
+			} else if m.activePanel == topPanel && m.currentMode == filesMode && m.status != nil && m.selectedFile < len(m.status.Files) {
 				file := m.status.Files[m.selectedFile]
 				if file.Staged != "" {
 					return m, doFileOperation(m.repo.Path, file.Path, "unstage")
@@ -373,6 +573,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err == nil {
 			m.currentDiff = msg.diff
 		}
+	case workspaceConfigMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.workspaceConfig = msg.config
+			m.repoCache = msg.cache
+			m.scanner = workspace.NewScanner(msg.config, msg.cache)
+			// Load cached repos immediately
+			m.repos = m.scanner.GetCachedRepos()
+			// Don't automatically start scan - let user trigger it with 'r'
+		}
+	case workspaceScanMsg:
+		m.scanning = false
+		m.lastScanTime = time.Now()
+		if msg.err == nil {
+			m.repos = msg.repos
+		}
+	case tickMsg:
+		// Only continue ticking if we're still scanning
+		if m.scanning {
+			return m, tickCmd()
+		}
 	case gitOperationMsg:
 		if msg.err == nil {
 			return m, loadRepository(".")
@@ -398,7 +620,8 @@ func (m model) View() string {
 		return fmt.Sprintf("\n  Error: %v\n\n  Make sure you're in a git repository.\n", m.err)
 	}
 
-	if m.repo == nil {
+	// In workspace modes, we don't need a repo loaded
+	if m.currentMode != workspaceMode && m.currentMode != workspaceManageMode && m.repo == nil {
 		return "\n  Loading repository..."
 	}
 
@@ -584,7 +807,13 @@ func (m model) renderContent(height int) string {
 
 	// Content depends on current mode
 	var top, bottom string
-	if m.currentMode == historyMode {
+	if m.currentMode == workspaceMode {
+		top = m.renderWorkspaces(m.width, topHeight)
+		bottom = m.renderRepoDetails(m.width, bottomHeight)
+	} else if m.currentMode == workspaceManageMode {
+		top = m.renderWorkspaceManager(m.width, topHeight)
+		bottom = m.renderWorkspaceHelp(m.width, bottomHeight)
+	} else if m.currentMode == historyMode {
 		top = m.renderCommits(m.width, topHeight)
 		bottom = m.renderCommitDetails(m.width, bottomHeight)
 	} else { // filesMode
@@ -1000,17 +1229,384 @@ func (m model) renderHelp() string {
 	if m.width < 80 {
 		// Compact help for narrow terminals
 		helpLines = []string{
-			"tab: panels • ↑↓/jk: nav • space: stage • h: history • s: files",
+			"tab: panels • ↑↓/jk: nav • space: stage • w: workspace/manage • h: history • s: files",
 			"b: branches • f: fetch • p: pull • P: push • r: refresh • q: quit",
 		}
 	} else {
 		helpLines = []string{
 			"tab: switch panel • ↑↓/jk: navigate • space/enter: stage/checkout",
-			"h: history mode • s: files mode • b: branches • f: fetch • p: pull • P: push • r: refresh • q: quit",
+			"w: workspace/manage • h: history mode • s: files mode • b: branches • f: fetch • p: pull • P: push • r: refresh • q: quit",
 		}
 	}
 	
 	return helpStyle.Render(strings.Join(helpLines, "\n"))
+}
+
+func (m model) renderWorkspaces(width, height int) string {
+	panelStyle := lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(func() string {
+			if m.activePanel == topPanel {
+				return "170"
+			}
+			return "240"
+		}()))
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("170"))
+
+	workspaceStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("214")).
+		Bold(true)
+
+	repoNameStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("117"))
+
+	branchStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("84"))
+
+	statusStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("203"))
+
+	itemStyle := lipgloss.NewStyle().
+		PaddingLeft(1)
+
+	selectedStyle := lipgloss.NewStyle().
+		PaddingLeft(1).
+		Background(lipgloss.Color("238"))
+
+	title := titleStyle.Render(func() string {
+		if m.scanning {
+			// Add a simple spinner animation
+			spinners := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+			spinner := spinners[int(time.Now().UnixMilli()/100)%len(spinners)]
+			return fmt.Sprintf("%s Scanning Workspaces... (%d found)", spinner, len(m.repos))
+		}
+		lastScan := ""
+		if !m.lastScanTime.IsZero() {
+			lastScan = fmt.Sprintf(" • Last scan: %s ago", formatRelativeTime(m.lastScanTime))
+		}
+		return fmt.Sprintf("📁 Repositories (%d)%s", len(m.repos), lastScan)
+	}())
+
+	content := []string{title, ""}
+
+	if len(m.repos) == 0 {
+		if !m.scanning {
+			if m.workspaceConfig != nil && len(m.workspaceConfig.Workspaces) == 0 {
+				// No workspaces configured - guide user to setup
+				content = append(content, itemStyle.Render("👋 Welcome to kvist!"))
+				content = append(content, itemStyle.Render(""))
+				content = append(content, itemStyle.Render("No workspaces configured yet."))
+				content = append(content, itemStyle.Render(""))
+				content = append(content, itemStyle.Render("🎯 Press 'w' to add your first workspace"))
+				content = append(content, itemStyle.Render(""))
+				content = append(content, itemStyle.Render("A workspace is a directory containing your Git repositories"))
+				content = append(content, itemStyle.Render("(e.g., ~/code, ~/projects, /mnt/c/code)"))
+			} else {
+				// Workspaces configured but no repos found
+				content = append(content, itemStyle.Render("No repositories found"))
+				content = append(content, itemStyle.Render(""))
+				hasEnabledWorkspaces := false
+				if m.workspaceConfig != nil {
+					for _, ws := range m.workspaceConfig.Workspaces {
+						if ws.Enabled {
+							hasEnabledWorkspaces = true
+							break
+						}
+					}
+				}
+				if hasEnabledWorkspaces {
+					content = append(content, itemStyle.Render("Press 'r' to scan configured workspaces"))
+				} else {
+					content = append(content, itemStyle.Render("Press 'w' to enable workspaces or add new ones"))
+				}
+			}
+		}
+	} else {
+		currentWorkspace := ""
+		for i, repo := range m.repos {
+			if len(content) >= height-3 {
+				break
+			}
+
+			// Add workspace header if changed
+			if repo.WorkspaceName != currentWorkspace {
+				currentWorkspace = repo.WorkspaceName
+				if len(content) > 2 { // Add spacing between workspaces
+					content = append(content, "")
+				}
+				content = append(content, workspaceStyle.Render("📂 "+currentWorkspace))
+			}
+
+			// Format repo line
+			repoLine := fmt.Sprintf("  %s", repoNameStyle.Render(repo.Name))
+
+			// Add branch info
+			if repo.Branch != "" {
+				repoLine += " " + branchStyle.Render("("+repo.Branch+")")
+			}
+
+			// Add status info
+			var statusParts []string
+			if repo.Ahead > 0 {
+				statusParts = append(statusParts, fmt.Sprintf("↑%d", repo.Ahead))
+			}
+			if repo.Behind > 0 {
+				statusParts = append(statusParts, fmt.Sprintf("↓%d", repo.Behind))
+			}
+			if len(statusParts) > 0 {
+				repoLine += " " + statusStyle.Render(strings.Join(statusParts, " "))
+			}
+
+			// Add freshness indicator
+			if !repo.LastScanned.IsZero() {
+				age := time.Since(repo.LastScanned)
+				if age > 10*time.Minute {
+					staleStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+					repoLine += " " + staleStyle.Render("⚠")
+				}
+			}
+
+			// Apply selection style
+			var line string
+			if i == m.selectedRepo {
+				line = selectedStyle.Render(repoLine)
+			} else {
+				line = itemStyle.Render(repoLine)
+			}
+			content = append(content, line)
+		}
+	}
+
+	return panelStyle.Render(strings.Join(content, "\n"))
+}
+
+func (m model) renderRepoDetails(width, height int) string {
+	panelStyle := lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(func() string {
+			if m.activePanel == bottomPanel {
+				return "170"
+			}
+			return "240"
+		}()))
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("170"))
+
+	labelStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("244")).
+		Bold(true)
+
+	valueStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("252"))
+
+	pathStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("241"))
+
+	content := []string{titleStyle.Render("📋 Repository Details"), ""}
+
+	if len(m.repos) == 0 || m.selectedRepo >= len(m.repos) {
+		content = append(content, "No repository selected")
+	} else {
+		repo := m.repos[m.selectedRepo]
+
+		content = append(content,
+			labelStyle.Render("Name: ")+valueStyle.Render(repo.Name),
+			labelStyle.Render("Path: ")+pathStyle.Render(repo.Path),
+			labelStyle.Render("Workspace: ")+valueStyle.Render(repo.WorkspaceName),
+		)
+
+		if repo.Branch != "" {
+			content = append(content, labelStyle.Render("Branch: ")+valueStyle.Render(repo.Branch))
+		}
+
+		if repo.HasUpstream {
+			var statusParts []string
+			if repo.Ahead > 0 {
+				statusParts = append(statusParts, fmt.Sprintf("%d commit(s) ahead", repo.Ahead))
+			}
+			if repo.Behind > 0 {
+				statusParts = append(statusParts, fmt.Sprintf("%d commit(s) behind", repo.Behind))
+			}
+			if len(statusParts) == 0 {
+				statusParts = append(statusParts, "up to date")
+			}
+			content = append(content, labelStyle.Render("Status: ")+valueStyle.Render(strings.Join(statusParts, ", ")))
+		}
+
+		if !repo.LastCommitTime.IsZero() {
+			content = append(content,
+				labelStyle.Render("Last Commit: ")+valueStyle.Render(repo.LastCommitTime.Format("2006-01-02 15:04:05")),
+				labelStyle.Render("Last Scanned: ")+valueStyle.Render(repo.LastScanned.Format("2006-01-02 15:04:05")),
+			)
+		}
+
+		// Add navigation hint
+		content = append(content, "",
+			pathStyle.Render("Press Enter to open this repository"))
+	}
+
+	return panelStyle.Render(strings.Join(content, "\n"))
+}
+
+func formatRelativeTime(t time.Time) string {
+	duration := time.Since(t)
+	if duration < time.Minute {
+		return fmt.Sprintf("%ds", int(duration.Seconds()))
+	} else if duration < time.Hour {
+		return fmt.Sprintf("%dm", int(duration.Minutes()))
+	} else if duration < 24*time.Hour {
+		return fmt.Sprintf("%dh", int(duration.Hours()))
+	} else {
+		return fmt.Sprintf("%dd", int(duration.Hours()/24))
+	}
+}
+
+func (m model) renderWorkspaceManager(width, height int) string {
+	panelStyle := lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(func() string {
+			if m.activePanel == topPanel {
+				return "170"
+			}
+			return "240"
+		}()))
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("170"))
+
+	itemStyle := lipgloss.NewStyle().
+		PaddingLeft(1)
+
+	selectedStyle := lipgloss.NewStyle().
+		PaddingLeft(1).
+		Background(lipgloss.Color("238"))
+
+	enabledStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("82"))
+
+	disabledStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("240"))
+
+	title := titleStyle.Render("⚙️  Workspace Management")
+	content := []string{title, ""}
+
+	if m.editingWorkspace {
+		nameIndicator := "  "
+		pathIndicator := "  "
+		if m.editingField == 0 {
+			nameIndicator = "▶ "
+		} else {
+			pathIndicator = "▶ "
+		}
+
+		nameValue := m.newWorkspaceName
+		if nameValue == "" {
+			nameValue = "(e.g., home, work, projects)"
+		}
+
+		pathValue := m.newWorkspacePath
+		if pathValue == "" {
+			pathValue = "(e.g., /mnt/c/code/home, ~/projects)"
+		}
+
+		content = append(content,
+			"📝 Add New Workspace:",
+			"",
+			fmt.Sprintf("%sName: %s", nameIndicator, nameValue),
+			fmt.Sprintf("%sPath: %s", pathIndicator, pathValue),
+			"",
+			"Tab: Switch fields • Enter: Save • Esc: Cancel",
+		)
+	} else {
+		if m.workspaceConfig != nil {
+			for i, ws := range m.workspaceConfig.Workspaces {
+				if len(content) >= height-3 {
+					break
+				}
+
+				var line string
+				status := "🔴"
+				style := disabledStyle
+				if ws.Enabled {
+					status = "🟢"
+					style = enabledStyle
+				}
+
+				line = fmt.Sprintf("  %s %s", status, style.Render(ws.Name))
+				line += fmt.Sprintf(" (%s)", ws.Path)
+
+				if i == m.selectedWorkspace {
+					content = append(content, selectedStyle.Render(line))
+				} else {
+					content = append(content, itemStyle.Render(line))
+				}
+			}
+
+			// Add "Add New Workspace" option
+			addNewLine := "  ➕ Add New Workspace"
+			if m.selectedWorkspace == len(m.workspaceConfig.Workspaces) {
+				content = append(content, selectedStyle.Render(addNewLine))
+			} else {
+				content = append(content, itemStyle.Render(addNewLine))
+			}
+		}
+	}
+
+	return panelStyle.Render(strings.Join(content, "\n"))
+}
+
+func (m model) renderWorkspaceHelp(width, height int) string {
+	panelStyle := lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(func() string {
+			if m.activePanel == bottomPanel {
+				return "170"
+			}
+			return "240"
+		}()))
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("170"))
+
+	helpStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("244")).
+		PaddingLeft(1)
+
+	content := []string{titleStyle.Render("🎯 Workspace Commands"), ""}
+
+	if m.editingWorkspace {
+		content = append(content,
+			helpStyle.Render("Tab: Switch between Name and Path fields"),
+			helpStyle.Render("Enter: Save workspace (both fields required)"),
+			helpStyle.Render("Backspace: Delete characters"),
+			helpStyle.Render("Esc: Cancel without saving"),
+		)
+	} else {
+		content = append(content,
+			helpStyle.Render("↑↓/jk: Navigate workspaces"),
+			helpStyle.Render("Space/Enter: Toggle enabled/Add new"),
+			helpStyle.Render("d: Delete workspace"),
+			helpStyle.Render("w: Back to workspace view"),
+			helpStyle.Render("q: Quit"),
+		)
+	}
+
+	return panelStyle.Render(strings.Join(content, "\n"))
 }
 
 func main() {

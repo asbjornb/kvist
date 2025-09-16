@@ -76,6 +76,11 @@ func getCurrentBranch(repoPath string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+// GetCurrentBranch returns the current branch name for a repository
+func GetCurrentBranch(repoPath string) (string, error) {
+	return getCurrentBranch(repoPath)
+}
+
 func GetCommits(repoPath string, limit int) ([]Commit, error) {
 	// %x1e = RS between commits, %x00 between fields
 	const logFmt = "%H%x00%h%x00%an%x00%ae%x00%at%x00%s%x00%b%x00%x1e"
@@ -252,6 +257,11 @@ func getAheadBehind(repoPath string) (ahead, behind int, ok bool) {
 		return ahead, behind, true
 	}
 	return 0, 0, false
+}
+
+// GetAheadBehind returns ahead/behind counts for the current branch vs upstream
+func GetAheadBehind(repoPath string) (ahead, behind int, ok bool) {
+	return getAheadBehind(repoPath)
 }
 
 type Branch struct {

@@ -46,3 +46,8 @@ __debug_bin
 # Temporary files
 *.tmp
 *.log
+
+# Kvist configuration and cache files
+.kvist/
+config.yaml
+repo-cache.json
