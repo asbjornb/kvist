@@ -530,6 +530,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.newWorkspaceName = ""
 					m.newWorkspacePath = ""
 					m.editingField = 0 // Start with name field
+					return m, tickCmd() // Start tick for cursor animation
 				} else if m.selectedWorkspace < len(m.workspaceConfig.Workspaces) {
 					// Toggle workspace enabled/disabled
 					workspace := &m.workspaceConfig.Workspaces[m.selectedWorkspace]
@@ -591,8 +592,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.repos = msg.repos
 		}
 	case tickMsg:
-		// Only continue ticking if we're still scanning
-		if m.scanning {
+		// Continue ticking if scanning or editing workspace
+		if m.scanning || m.editingWorkspace {
 			return m, tickCmd()
 		}
 	case gitOperationMsg:
@@ -1511,14 +1512,26 @@ func (m model) renderWorkspaceManager(width, height int) string {
 			pathIndicator = "▶ "
 		}
 
+		// Add a blinking cursor to show where typing will happen
+		cursor := "_"
+		if time.Now().UnixMilli()/500%2 == 0 {
+			cursor = "█"
+		}
+
 		nameValue := m.newWorkspaceName
-		if nameValue == "" {
-			nameValue = "(e.g., home, work, projects)"
+		if m.editingField == 0 {
+			nameValue += cursor
+		}
+		if nameValue == cursor {
+			nameValue = "(e.g., home, work, projects)" + cursor
 		}
 
 		pathValue := m.newWorkspacePath
-		if pathValue == "" {
-			pathValue = "(e.g., /mnt/c/code/home, ~/projects)"
+		if m.editingField == 1 {
+			pathValue += cursor
+		}
+		if pathValue == cursor {
+			pathValue = "(e.g., /mnt/c/code/home, ~/projects)" + cursor
 		}
 
 		content = append(content,
