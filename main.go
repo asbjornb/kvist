@@ -1518,27 +1518,50 @@ func (m model) renderWorkspaceManager(width, height int) string {
 			cursor = "█"
 		}
 
+		// Build name field with cursor
 		nameValue := m.newWorkspaceName
 		if m.editingField == 0 {
-			nameValue += cursor
-		}
-		if nameValue == cursor {
-			nameValue = "(e.g., home, work, projects)" + cursor
+			if nameValue == "" {
+				nameValue = cursor
+			} else {
+				nameValue = nameValue + cursor
+			}
 		}
 
+		// Build path field with cursor
 		pathValue := m.newWorkspacePath
 		if m.editingField == 1 {
-			pathValue += cursor
+			if pathValue == "" {
+				pathValue = cursor
+			} else {
+				pathValue = pathValue + cursor
+			}
 		}
-		if pathValue == cursor {
-			pathValue = "(e.g., /mnt/c/code/home, ~/projects)" + cursor
+
+		// Calculate padding for alignment
+		nameFieldLen := len("Name: " + m.newWorkspaceName)
+		pathFieldLen := len("Path: " + m.newWorkspacePath)
+
+		// Ensure minimum spacing before help text
+		minPadding := 30
+		namePadding := minPadding - nameFieldLen
+		if namePadding < 4 {
+			namePadding = 4
 		}
+		pathPadding := minPadding - pathFieldLen
+		if pathPadding < 4 {
+			pathPadding = 4
+		}
+
+		// Help text positioned to the right with proper spacing
+		nameHelp := strings.Repeat(" ", namePadding) + "(e.g., home, work, projects)"
+		pathHelp := strings.Repeat(" ", pathPadding) + "(e.g., /mnt/c/code/home, ~/projects)"
 
 		content = append(content,
 			"📝 Add New Workspace:",
 			"",
-			fmt.Sprintf("%sName: %s", nameIndicator, nameValue),
-			fmt.Sprintf("%sPath: %s", pathIndicator, pathValue),
+			fmt.Sprintf("%sName: %s%s", nameIndicator, nameValue, nameHelp),
+			fmt.Sprintf("%sPath: %s%s", pathIndicator, pathValue, pathHelp),
 			"",
 			"Tab: Switch fields • Enter: Save • Esc: Cancel",
 		)
