@@ -69,6 +69,7 @@ type model struct {
 	newWorkspacePath  string
 	editingField      int  // 0 = name, 1 = path
 	currentWorkspace  *workspace.Workspace // currently selected workspace
+	searchMode        bool                 // whether we're in search mode
 	filterText        string               // filter text for repo search
 	filteredRepos     []workspace.RepoInfo // filtered list of repos
 	scrollOffset      int                  // scroll offset for repo list
@@ -413,9 +414,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Handle filtering in workspace mode
-		if m.currentMode == workspaceMode && !m.editingWorkspace {
+		// Handle search mode in workspace mode
+		if m.currentMode == workspaceMode && m.searchMode && !m.editingWorkspace {
 			switch msg.String() {
+			case "enter":
+				// Exit search mode
+				m.searchMode = false
+				return m, nil
 			case "backspace":
 				if len(m.filterText) > 0 {
 					m.filterText = m.filterText[:len(m.filterText)-1]
@@ -423,20 +428,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case "ctrl+c", "esc":
-				if m.filterText != "" {
-					m.filterText = ""
-					m.updateFilteredRepos()
-					return m, nil
-				}
+				// Exit search mode and clear filter
+				m.searchMode = false
+				m.filterText = ""
+				m.updateFilteredRepos()
+				return m, nil
 			default:
 				// Add printable characters to filter
 				if len(msg.String()) == 1 && msg.String()[0] >= 32 && msg.String()[0] <= 126 {
-					// Skip common navigation keys
-					if msg.String() != " " {
-						m.filterText += msg.String()
-						m.updateFilteredRepos()
-						return m, nil
-					}
+					m.filterText += msg.String()
+					m.updateFilteredRepos()
+					return m, nil
 				}
 			}
 		}
@@ -571,6 +573,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "s":
 			m.currentMode = filesMode
 			m.diffScrollOffset = 0 // Reset scroll when switching to files mode
+		case "/":
+			if m.currentMode == workspaceMode {
+				// Enter search mode
+				m.searchMode = true
+				m.filterText = ""
+				m.updateFilteredRepos()
+				return m, tickCmd() // Start cursor animation
+			}
 		case "d":
 			if m.currentMode == workspaceManageMode && m.workspaceConfig != nil && m.selectedWorkspace < len(m.workspaceConfig.Workspaces) {
 				// Delete selected workspace
@@ -688,8 +698,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateFilteredRepos()
 		}
 	case tickMsg:
-		// Continue ticking if scanning or editing workspace
-		if m.scanning || m.editingWorkspace {
+		// Continue ticking if scanning, editing workspace, or in search mode
+		if m.scanning || m.editingWorkspace || m.searchMode {
 			return m, tickCmd()
 		}
 	case gitOperationMsg:
@@ -1412,10 +1422,20 @@ func (m model) renderWorkspaces(width, height int) string {
 		m.updateFilteredRepos()
 	}
 
-	// Show filter text if active
-	if m.filterText != "" {
+	// Show search mode or filter text if active
+	if m.searchMode {
+		searchStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+		cursor := ""
+		if time.Now().UnixMilli()/500%2 == 0 {
+			cursor = "█"
+		} else {
+			cursor = "_"
+		}
+		content = append(content, searchStyle.Render(fmt.Sprintf("Search: %s%s", m.filterText, cursor)))
+		content = append(content, "")
+	} else if m.filterText != "" {
 		filterStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-		content = append(content, filterStyle.Render(fmt.Sprintf("Filter: %s", m.filterText)))
+		content = append(content, filterStyle.Render(fmt.Sprintf("Filter: %s (press / to edit)", m.filterText)))
 		content = append(content, "")
 	}
 
