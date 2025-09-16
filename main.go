@@ -182,6 +182,11 @@ type workspaceScanMsg struct {
 	err   error
 }
 
+type repoDiscoveredMsg struct {
+	repo workspace.RepoInfo
+	err  error
+}
+
 type tickMsg time.Time
 
 func loadDiff(repoPath string, filePath string, staged bool, isUntracked bool) tea.Cmd {
@@ -263,6 +268,24 @@ func scanSingleWorkspace(scanner *workspace.Scanner, ws *workspace.Workspace) te
 		result := <-results
 
 		return workspaceScanMsg{repos: result.Repos, err: result.Error}
+	}
+}
+
+func scanSingleWorkspaceIncremental(scanner *workspace.Scanner, ws *workspace.Workspace) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Start the incremental scanner in a goroutine
+		repoChannel := scanner.DiscoverReposIncremental(ctx, *ws)
+
+		// Return the first batch quickly
+		var repos []workspace.RepoInfo
+		for repo := range repoChannel {
+			repos = append(repos, repo)
+		}
+
+		return workspaceScanMsg{repos: repos, err: nil}
 	}
 }
 
@@ -477,10 +500,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.currentMode == workspaceMode {
 				// Refresh workspace scan
 				if m.currentWorkspace != nil && m.scanner != nil {
-					// Scan only the current workspace
+					// Scan only the current workspace using incremental scanner
 					m.scanning = true
 					return m, tea.Batch(
-						scanSingleWorkspace(m.scanner, m.currentWorkspace),
+						scanSingleWorkspaceIncremental(m.scanner, m.currentWorkspace),
 						tickCmd(),
 					)
 				} else if m.workspaceConfig != nil && m.repoCache != nil {
@@ -1381,21 +1404,25 @@ func (m model) renderWorkspaces(width, height int) string {
 			// Format repo line
 			repoLine := fmt.Sprintf("  %s", repoNameStyle.Render(repo.Name))
 
-			// Add branch info
+			// Add branch info or loading indicator
 			if repo.Branch != "" {
 				repoLine += " " + branchStyle.Render("("+repo.Branch+")")
-			}
 
-			// Add status info
-			var statusParts []string
-			if repo.Ahead > 0 {
-				statusParts = append(statusParts, fmt.Sprintf("↑%d", repo.Ahead))
-			}
-			if repo.Behind > 0 {
-				statusParts = append(statusParts, fmt.Sprintf("↓%d", repo.Behind))
-			}
-			if len(statusParts) > 0 {
-				repoLine += " " + statusStyle.Render(strings.Join(statusParts, " "))
+				// Add status info
+				var statusParts []string
+				if repo.Ahead > 0 {
+					statusParts = append(statusParts, fmt.Sprintf("↑%d", repo.Ahead))
+				}
+				if repo.Behind > 0 {
+					statusParts = append(statusParts, fmt.Sprintf("↓%d", repo.Behind))
+				}
+				if len(statusParts) > 0 {
+					repoLine += " " + statusStyle.Render(strings.Join(statusParts, " "))
+				}
+			} else {
+				// Show loading indicator for repos without metadata yet
+				loadingStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+				repoLine += " " + loadingStyle.Render("⋯")
 			}
 
 			// Add freshness indicator

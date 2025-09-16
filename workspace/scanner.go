@@ -319,3 +319,151 @@ func (s *Scanner) ScanSingleWorkspace(ctx context.Context, workspace Workspace) 
 
 	return results
 }
+// DiscoverReposIncremental quickly finds repos and reports them one by one
+func (s *Scanner) DiscoverReposIncremental(ctx context.Context, workspace Workspace) <-chan RepoInfo {
+	results := make(chan RepoInfo, 10) // Buffer for faster processing
+
+	go func() {
+		defer close(results)
+
+		// Quick discovery - just find .git directories without deep scanning
+		repoPaths, err := s.discoverReposQuick(ctx, workspace)
+		if err != nil {
+			return
+		}
+
+		// Send each discovered repo immediately with basic info
+		for _, repoPath := range repoPaths {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			// Create basic repo info immediately
+			repo := RepoInfo{
+				Path:          repoPath,
+				Name:          filepath.Base(repoPath),
+				WorkspaceName: workspace.Name,
+				LastScanned:   time.Now(),
+				// Branch, Ahead, Behind will be filled in later
+			}
+
+			select {
+			case results <- repo:
+			case <-ctx.Done():
+				return
+			}
+
+			// Optionally enrich with metadata in the background
+			// This is done asynchronously so UI updates immediately
+			go s.enrichRepoMetadata(ctx, &repo)
+		}
+	}()
+
+	return results
+}
+
+// discoverReposQuick finds git repos without deep metadata scanning
+func (s *Scanner) discoverReposQuick(ctx context.Context, workspace Workspace) ([]string, error) {
+	var repos []string
+
+	// First level scan - look at immediate subdirectories
+	entries, err := os.ReadDir(workspace.Path)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, entry := range entries {
+		select {
+		case <-ctx.Done():
+			return repos, ctx.Err()
+		default:
+		}
+
+		if !entry.IsDir() {
+			continue
+		}
+
+		entryPath := filepath.Join(workspace.Path, entry.Name())
+
+		// Skip hidden directories (except those that might contain repos)
+		if strings.HasPrefix(entry.Name(), ".") && entry.Name() != ".git" {
+			continue
+		}
+
+		// Check if this is a git repo
+		gitDir := filepath.Join(entryPath, ".git")
+		if _, err := os.Stat(gitDir); err == nil {
+			repos = append(repos, entryPath)
+			continue
+		}
+
+		// Check if it's a bare repo
+		if _, err := os.Stat(filepath.Join(entryPath, "HEAD")); err == nil {
+			if _, err := os.Stat(filepath.Join(entryPath, "refs")); err == nil {
+				repos = append(repos, entryPath)
+				continue
+			}
+		}
+
+		// For non-git directories, do a shallow scan (one level down)
+		// This catches common structures like ~/code/project1, ~/code/project2
+		subEntries, err := os.ReadDir(entryPath)
+		if err != nil {
+			continue // Skip directories we can't read
+		}
+
+		for _, subEntry := range subEntries {
+			if !subEntry.IsDir() {
+				continue
+			}
+
+			subPath := filepath.Join(entryPath, subEntry.Name())
+
+			// Skip common build/dependency directories
+			if subEntry.Name() == "node_modules" || subEntry.Name() == "target" ||
+			   subEntry.Name() == "build" || subEntry.Name() == "dist" {
+				continue
+			}
+
+			// Check for git repo
+			if _, err := os.Stat(filepath.Join(subPath, ".git")); err == nil {
+				repos = append(repos, subPath)
+			}
+		}
+	}
+
+	return repos, nil
+}
+
+// enrichRepoMetadata fills in branch, ahead/behind info asynchronously
+func (s *Scanner) enrichRepoMetadata(ctx context.Context, repo *RepoInfo) {
+	select {
+	case <-ctx.Done():
+		return
+	default:
+	}
+
+	// Get current branch
+	if branch, err := git.GetCurrentBranch(repo.Path); err == nil {
+		repo.Branch = branch
+	}
+
+	// Get ahead/behind info
+	if ahead, behind, ok := git.GetAheadBehind(repo.Path); ok {
+		repo.Ahead = ahead
+		repo.Behind = behind
+		repo.HasUpstream = true
+	}
+
+	// Get last commit time
+	if commits, err := git.GetCommits(repo.Path, 1); err == nil && len(commits) > 0 {
+		repo.LastCommitTime = commits[0].Time
+	}
+
+	// Update cache
+	s.mu.Lock()
+	s.cache.Repos[repo.Path] = *repo
+	s.mu.Unlock()
+}
