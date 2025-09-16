@@ -42,6 +42,7 @@ func (s *Scanner) ScanWorkspaces(ctx context.Context) <-chan ScanResult {
 
 		var allRepos []RepoInfo
 		var errors []string
+		successfulWorkspaces := make(map[string]bool)
 
 		// Discover repos in each workspace
 		for _, workspace := range s.config.Workspaces {
@@ -55,11 +56,20 @@ func (s *Scanner) ScanWorkspaces(ctx context.Context) <-chan ScanResult {
 			// Scan each repo for metadata in parallel
 			scanned := s.scanRepos(ctx, repos, workspace.Name)
 			allRepos = append(allRepos, scanned...)
+			successfulWorkspaces[workspace.Name] = true
 		}
 
-		// Update cache
+		// Update cache - only clear repos from successfully scanned workspaces
 		s.mu.Lock()
-		s.cache.Repos = make(map[string]RepoInfo)
+
+		// Remove old repos only from successfully scanned workspaces
+		for path, repo := range s.cache.Repos {
+			if successfulWorkspaces[repo.WorkspaceName] {
+				delete(s.cache.Repos, path)
+			}
+		}
+
+		// Add all newly discovered repos
 		for _, repo := range allRepos {
 			s.cache.Repos[repo.Path] = repo
 		}
@@ -466,4 +476,16 @@ func (s *Scanner) enrichRepoMetadata(ctx context.Context, repo *RepoInfo) {
 	s.mu.Lock()
 	s.cache.Repos[repo.Path] = *repo
 	s.mu.Unlock()
+}
+
+// UpdateCacheRepo updates a single repo in cache (thread-safe)
+func (s *Scanner) UpdateCacheRepo(repo RepoInfo) {
+	s.mu.Lock()
+	s.cache.Repos[repo.Path] = repo
+	s.mu.Unlock()
+}
+
+// GetCache returns the cache (for saving to disk)
+func (s *Scanner) GetCache() *RepoCache {
+	return s.cache
 }

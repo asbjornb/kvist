@@ -338,10 +338,24 @@ func scanSingleWorkspaceIncremental(scanner *workspace.Scanner, ws *workspace.Wo
 		// Start the incremental scanner in a goroutine
 		repoChannel := scanner.DiscoverReposIncremental(ctx, *ws)
 
-		// Return the first batch quickly
+		// Collect repos and update cache as we discover them
 		var repos []workspace.RepoInfo
 		for repo := range repoChannel {
 			repos = append(repos, repo)
+
+			// Update cache immediately for each discovered repo
+			// This ensures repos are cached even if scan is interrupted
+			func() {
+				scanner.UpdateCacheRepo(repo)
+			}()
+		}
+
+		// Save cache to disk with all discovered repos
+		if len(repos) > 0 {
+			// Try to save cache, but don't fail if it doesn't work
+			if cache := scanner.GetCache(); cache != nil {
+				cache.Save() // Best effort - ignore errors to avoid blocking UI
+			}
 		}
 
 		return workspaceScanMsg{repos: repos, err: nil}
