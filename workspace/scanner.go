@@ -77,7 +77,7 @@ func (s *Scanner) ScanWorkspaces(ctx context.Context) <-chan ScanResult {
 		s.mu.Unlock()
 
 		// Save cache to disk
-		if err := s.cache.Save(); err != nil {
+		if err := s.SaveCache(); err != nil {
 			errors = append(errors, fmt.Sprintf("failed to save cache: %v", err))
 		}
 
@@ -296,7 +296,7 @@ func (s *Scanner) UpdateRepo(ctx context.Context, repoPath string) error {
 	s.cache.Repos[repoPath] = repo
 	s.mu.Unlock()
 
-	return s.cache.Save()
+	return s.SaveCache()
 }
 
 // ScanSingleWorkspace scans a single workspace and updates the cache
@@ -333,7 +333,7 @@ func (s *Scanner) ScanSingleWorkspace(ctx context.Context, workspace Workspace) 
 		s.mu.Unlock()
 
 		// Save cache to disk
-		if err := s.cache.Save(); err != nil {
+		if err := s.SaveCache(); err != nil {
 			select {
 			case results <- ScanResult{Repos: scanned, Error: fmt.Errorf("failed to save cache: %v", err)}:
 			case <-ctx.Done():
@@ -349,6 +349,7 @@ func (s *Scanner) ScanSingleWorkspace(ctx context.Context, workspace Workspace) 
 
 	return results
 }
+
 // DiscoverReposIncremental quickly finds repos and reports them one by one
 func (s *Scanner) DiscoverReposIncremental(ctx context.Context, workspace Workspace) <-chan RepoInfo {
 	results := make(chan RepoInfo, 10) // Buffer for faster processing
@@ -453,7 +454,7 @@ func (s *Scanner) discoverReposQuick(ctx context.Context, workspace Workspace) (
 
 			// Skip common build/dependency directories
 			if subEntry.Name() == "node_modules" || subEntry.Name() == "target" ||
-			   subEntry.Name() == "build" || subEntry.Name() == "dist" {
+				subEntry.Name() == "build" || subEntry.Name() == "dist" {
 				continue
 			}
 
@@ -508,6 +509,16 @@ func (s *Scanner) UpdateCacheRepo(repo RepoInfo) {
 // GetCache returns the cache (for saving to disk)
 func (s *Scanner) GetCache() *RepoCache {
 	return s.cache
+}
+
+// SaveCache persists the cache with proper locking to avoid races.
+func (s *Scanner) SaveCache() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cache == nil {
+		return nil
+	}
+	return s.cache.Save()
 }
 
 // UpdateLastRepo updates the last accessed repository in cache

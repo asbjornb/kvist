@@ -81,6 +81,8 @@ type model struct {
 	filterText        string               // filter text for repo search
 	filteredRepos     []workspace.RepoInfo // filtered list of repos
 	scrollOffset      int                  // scroll offset for repo list
+	incrementalScanCh <-chan workspace.RepoInfo
+	incrementalCancel context.CancelFunc
 
 	// Modal state
 	showingModal bool      // whether modal is displayed
@@ -121,6 +123,11 @@ type repoMetadataLoadedMsg struct {
 	remotes  []git.Remote
 	stashes  []git.Stash
 	err      error
+}
+
+type incrementalScanInitMsg struct {
+	channel <-chan workspace.RepoInfo
+	cancel  context.CancelFunc
 }
 
 // Fast loading: repository basics and status for immediate file view
@@ -341,34 +348,51 @@ func scanSingleWorkspace(scanner *workspace.Scanner, ws *workspace.Workspace) te
 }
 
 func scanSingleWorkspaceIncremental(scanner *workspace.Scanner, ws *workspace.Workspace) tea.Cmd {
+	if scanner == nil || ws == nil {
+		return func() tea.Msg {
+			return workspaceScanMsg{err: fmt.Errorf("workspace scanner not available")}
+		}
+	}
+
+	workspaceCopy := *ws
+
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		repoChannel := scanner.DiscoverReposIncremental(ctx, workspaceCopy)
+		return incrementalScanInitMsg{channel: repoChannel, cancel: cancel}
+	}
+}
 
-		// Start the incremental scanner in a goroutine
-		repoChannel := scanner.DiscoverReposIncremental(ctx, *ws)
-
-		// Collect repos and update cache as we discover them
-		var repos []workspace.RepoInfo
-		for repo := range repoChannel {
-			repos = append(repos, repo)
-
-			// Update cache immediately for each discovered repo
-			// This ensures repos are cached even if scan is interrupted
-			func() {
-				scanner.UpdateCacheRepo(repo)
-			}()
-		}
-
-		// Save cache to disk with all discovered repos
-		if len(repos) > 0 {
-			// Try to save cache, but don't fail if it doesn't work
-			if cache := scanner.GetCache(); cache != nil {
-				cache.Save() // Best effort - ignore errors to avoid blocking UI
+func incrementalScanNextCmd(scanner *workspace.Scanner, ch <-chan workspace.RepoInfo, cancel context.CancelFunc) tea.Cmd {
+	return func() tea.Msg {
+		if ch == nil {
+			if cancel != nil {
+				cancel()
 			}
+			return workspaceScanMsg{err: fmt.Errorf("no incremental scan channel")}
 		}
 
-		return workspaceScanMsg{repos: repos, err: nil}
+		repo, ok := <-ch
+		if !ok {
+			if cancel != nil {
+				cancel()
+			}
+			var (
+				repos   []workspace.RepoInfo
+				saveErr error
+			)
+			if scanner != nil {
+				saveErr = scanner.SaveCache()
+				repos = scanner.GetCachedRepos()
+			}
+			return workspaceScanMsg{repos: repos, err: saveErr}
+		}
+
+		if scanner != nil {
+			scanner.UpdateCacheRepo(repo)
+		}
+
+		return repoDiscoveredMsg{repo: repo}
 	}
 }
 
@@ -577,8 +601,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 									m.scanner.UpdateLastWorkspace(m.currentWorkspace.Name)
 									// Save state to disk (best effort, don't block on errors)
 									go func() {
-										if cache := m.scanner.GetCache(); cache != nil {
-											cache.Save()
+										if m.scanner != nil {
+											_ = m.scanner.SaveCache()
 										}
 									}()
 								}
@@ -830,8 +854,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.scanner.UpdateLastRepo(selectedRepo.Path)
 					// Save state to disk (best effort, don't block on errors)
 					go func() {
-						if cache := m.scanner.GetCache(); cache != nil {
-							cache.Save()
+						if m.scanner != nil {
+							_ = m.scanner.SaveCache()
 						}
 					}()
 				}
@@ -855,8 +879,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.scanner.UpdateLastWorkspace(m.currentWorkspace.Name)
 						// Save state to disk (best effort, don't block on errors)
 						go func() {
-							if cache := m.scanner.GetCache(); cache != nil {
-								cache.Save()
+							if m.scanner != nil {
+								_ = m.scanner.SaveCache()
 							}
 						}()
 					}
@@ -946,7 +970,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 		}
+	case incrementalScanInitMsg:
+		m.incrementalScanCh = msg.channel
+		m.incrementalCancel = msg.cancel
+		if m.scanner != nil && m.incrementalScanCh != nil {
+			return m, incrementalScanNextCmd(m.scanner, m.incrementalScanCh, m.incrementalCancel)
+		}
+	case repoDiscoveredMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		if m.scanner != nil {
+			m.repos = m.scanner.GetCachedRepos()
+			m.updateFilteredRepos()
+		}
+		if m.incrementalScanCh != nil && m.scanner != nil {
+			return m, incrementalScanNextCmd(m.scanner, m.incrementalScanCh, m.incrementalCancel)
+		}
 	case workspaceScanMsg:
+		if m.incrementalCancel != nil {
+			m.incrementalCancel = nil
+		}
+		m.incrementalScanCh = nil
 		m.scanning = false
 		m.lastScanTime = time.Now()
 		if msg.err == nil {
