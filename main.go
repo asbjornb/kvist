@@ -167,31 +167,6 @@ func loadRepositoryMetadata(path string) tea.Cmd {
 	}
 }
 
-// Legacy function - keep for backward compatibility for now
-func loadRepository(path string) tea.Cmd {
-	return func() tea.Msg {
-		repo, err := git.OpenRepository(path)
-		if err != nil {
-			return repoLoadedMsg{err: err}
-		}
-
-		commits, _ := git.GetCommits(repo.Path, 50)
-		branches, _ := git.GetBranches(repo.Path)
-		status, _ := git.GetStatus(repo.Path)
-		remotes, _ := git.GetRemotes(repo.Path)
-		stashes, _ := git.GetStashes(repo.Path)
-
-		return repoLoadedMsg{
-			repo:     repo,
-			commits:  commits,
-			branches: branches,
-			status:   status,
-			remotes:  remotes,
-			stashes:  stashes,
-		}
-	}
-}
-
 type gitOperationMsg struct {
 	operation git.GitOp
 	err       error
@@ -329,18 +304,6 @@ func scanWorkspaces(config *workspace.Config, cache *workspace.RepoCache) tea.Cm
 		defer cancel()
 
 		results := scanner.ScanWorkspaces(ctx)
-		result := <-results
-
-		return workspaceScanMsg{repos: result.Repos, err: result.Error}
-	}
-}
-
-func scanSingleWorkspace(scanner *workspace.Scanner, ws *workspace.Workspace) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		results := scanner.ScanSingleWorkspace(ctx, *ws)
 		result := <-results
 
 		return workspaceScanMsg{repos: result.Repos, err: result.Error}

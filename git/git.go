@@ -37,8 +37,8 @@ func (op GitOp) String() string {
 }
 
 type Repository struct {
-	Path       string
-	Name       string
+	Path          string
+	Name          string
 	CurrentBranch string
 }
 
@@ -56,12 +56,12 @@ func OpenRepository(path string) (*Repository, error) {
 	}
 
 	repoPath := strings.TrimSpace(string(output))
-	
+
 	branch, _ := getCurrentBranch(repoPath)
-	
+
 	return &Repository{
-		Path:       repoPath,
-		Name:       filepath.Base(repoPath),
+		Path:          repoPath,
+		Name:          filepath.Base(repoPath),
 		CurrentBranch: branch,
 	}, nil
 }
@@ -123,7 +123,7 @@ func GetCommits(repoPath string, limit int) ([]Commit, error) {
 func FormatRelativeTime(t time.Time) string {
 	now := time.Now()
 	diff := now.Sub(t)
-	
+
 	if diff < time.Minute {
 		return "just now"
 	} else if diff < time.Hour {
@@ -185,17 +185,17 @@ func GetBranches(repoPath string) ([]Branch, error) {
 	}
 
 	var branches []Branch
-	
+
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		
+
 		var isCurrent bool
 		var name string
-		
+
 		if strings.HasPrefix(line, "* ") {
 			isCurrent = true
 			name = strings.TrimSpace(line[2:])
@@ -203,7 +203,7 @@ func GetBranches(repoPath string) ([]Branch, error) {
 			isCurrent = false
 			name = strings.TrimSpace(line)
 		}
-		
+
 		// Skip remote tracking branches that are duplicates of local branches
 		if strings.HasPrefix(name, "remotes/origin/") {
 			remoteName := strings.TrimPrefix(name, "remotes/origin/")
@@ -220,13 +220,13 @@ func GetBranches(repoPath string) ([]Branch, error) {
 			}
 			name = remoteName + " (remote)"
 		}
-		
+
 		var ahead, behind int
 		if isCurrent && !strings.Contains(name, "(remote)") {
 			// Only get ahead/behind for the current branch
 			ahead, behind, _ = getAheadBehind(repoPath)
 		}
-		
+
 		branches = append(branches, Branch{
 			Name:      name,
 			IsCurrent: isCurrent,
@@ -554,35 +554,6 @@ func ExecuteGitOp(repoPath string, op GitOp) error {
 	return cmd.Run()
 }
 
-// Legacy functions for backward compatibility (use ExecuteGitOp instead)
-func Fetch(repoPath string) error {
-	return ExecuteGitOp(repoPath, OpFetch)
-}
-
-func Pull(repoPath string) error {
-	return ExecuteGitOp(repoPath, OpPull)
-}
-
-func Push(repoPath string) error {
-	return ExecuteGitOp(repoPath, OpPush)
-}
-
-// run executes a git command with timeout and returns the output
-func run(repoPath string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "git", args...)
-	if repoPath != "" {
-		cmd.Dir = repoPath
-	}
-	output, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return string(output), nil
-}
-
 // runGitAllowExit1 executes git commands that may exit with code 1 (like diff)
 func runGitAllowExit1(dir string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -660,20 +631,6 @@ func CreateBranch(repoPath string, branch string) error {
 	return cmd.Run()
 }
 
-func DeleteBranch(repoPath string, branch string, force bool) error {
-	args := []string{"branch"}
-	if force {
-		args = append(args, "-D")
-	} else {
-		args = append(args, "-d")
-	}
-	args = append(args, branch)
-	
-	cmd := exec.Command("git", args...)
-	cmd.Dir = repoPath
-	return cmd.Run()
-}
-
 func GetRemotes(repoPath string) ([]Remote, error) {
 	cmd := exec.Command("git", "remote", "-v")
 	cmd.Dir = repoPath
@@ -684,20 +641,20 @@ func GetRemotes(repoPath string) ([]Remote, error) {
 
 	var remotes []Remote
 	remotesMap := make(map[string]*Remote)
-	
+
 	lines := strings.Split(string(output), "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
-		
+
 		parts := strings.Fields(line)
 		if len(parts) >= 3 {
 			name := parts[0]
 			url := parts[1]
 			direction := strings.Trim(parts[2], "()")
-			
+
 			if remote, exists := remotesMap[name]; exists {
 				if direction == "push" {
 					remote.PushURL = url
@@ -715,11 +672,11 @@ func GetRemotes(repoPath string) ([]Remote, error) {
 			}
 		}
 	}
-	
+
 	for _, remote := range remotesMap {
 		remotes = append(remotes, *remote)
 	}
-	
+
 	return remotes, nil
 }
 
@@ -744,7 +701,7 @@ func GetStashes(repoPath string) ([]Stash, error) {
 		if line == "" {
 			continue
 		}
-		
+
 		parts := strings.Split(line, "\x00")
 		if len(parts) >= 3 {
 			stashes = append(stashes, Stash{
@@ -754,7 +711,7 @@ func GetStashes(repoPath string) ([]Stash, error) {
 			})
 		}
 	}
-	
+
 	return stashes, nil
 }
 
