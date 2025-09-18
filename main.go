@@ -1826,19 +1826,30 @@ func (m model) renderWorkspaces(width, height int) string {
 			lastScan = fmt.Sprintf(" • Last scan: %s ago", formatRelativeTime(m.lastScanTime))
 		}
 
-		totalRepos := len(m.repos)
+		// Calculate workspace-specific repo count
+		var workspaceRepos int
+		if m.currentWorkspace != nil {
+			for _, repo := range m.repos {
+				if repo.WorkspaceName == m.currentWorkspace.Name {
+					workspaceRepos++
+				}
+			}
+		} else {
+			workspaceRepos = len(m.repos)
+		}
+
 		displayedRepos := len(m.filteredRepos)
 
 		if m.currentWorkspace != nil {
 			if m.filterText != "" {
-				return fmt.Sprintf("📂 %s (%d/%d repos)%s", m.currentWorkspace.Name, displayedRepos, totalRepos, lastScan)
+				return fmt.Sprintf("📂 %s (%d/%d repos)%s", m.currentWorkspace.Name, displayedRepos, workspaceRepos, lastScan)
 			}
-			return fmt.Sprintf("📂 %s (%d repos)%s", m.currentWorkspace.Name, totalRepos, lastScan)
+			return fmt.Sprintf("📂 %s (%d repos)%s", m.currentWorkspace.Name, workspaceRepos, lastScan)
 		}
 		if m.filterText != "" {
-			return fmt.Sprintf("📁 All Repositories (%d/%d)%s", displayedRepos, totalRepos, lastScan)
+			return fmt.Sprintf("📁 All Repositories (%d/%d)%s", displayedRepos, workspaceRepos, lastScan)
 		}
-		return fmt.Sprintf("📁 All Repositories (%d)%s", totalRepos, lastScan)
+		return fmt.Sprintf("📁 All Repositories (%d)%s", workspaceRepos, lastScan)
 	}())
 
 	content := []string{title, ""}

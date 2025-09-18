@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -94,7 +95,7 @@ func (s *Scanner) ScanWorkspaces(ctx context.Context) <-chan ScanResult {
 	return results
 }
 
-// GetCachedRepos returns cached repository information
+// GetCachedRepos returns cached repository information sorted by last commit time
 func (s *Scanner) GetCachedRepos() []RepoInfo {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -103,6 +104,25 @@ func (s *Scanner) GetCachedRepos() []RepoInfo {
 	for _, repo := range s.cache.Repos {
 		repos = append(repos, repo)
 	}
+
+	// Sort by last commit time (most recent first)
+	// Repos without commit time go to the end
+	sort.Slice(repos, func(i, j int) bool {
+		// If both have commit times, sort by most recent first
+		if !repos[i].LastCommitTime.IsZero() && !repos[j].LastCommitTime.IsZero() {
+			return repos[i].LastCommitTime.After(repos[j].LastCommitTime)
+		}
+		// If only one has commit time, it goes first
+		if !repos[i].LastCommitTime.IsZero() && repos[j].LastCommitTime.IsZero() {
+			return true
+		}
+		if repos[i].LastCommitTime.IsZero() && !repos[j].LastCommitTime.IsZero() {
+			return false
+		}
+		// Both have no commit time, sort by name
+		return repos[i].Name < repos[j].Name
+	})
+
 	return repos
 }
 
