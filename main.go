@@ -29,6 +29,8 @@ const (
 	filesMode                           // showing files + diff
 )
 
+const autoScanInterval = 5 * time.Minute
+
 type modalType int
 
 const (
@@ -124,6 +126,8 @@ type repoMetadataLoadedMsg struct {
 	stashes  []git.Stash
 	err      error
 }
+
+type autoScanMsg struct{}
 
 type incrementalScanInitMsg struct {
 	channel <-chan workspace.RepoInfo
@@ -297,9 +301,12 @@ func loadWorkspaceConfig() tea.Msg {
 	return workspaceConfigMsg{config: config, cache: cache}
 }
 
-func scanWorkspaces(config *workspace.Config, cache *workspace.RepoCache) tea.Cmd {
+func scanWorkspaces(scanner *workspace.Scanner) tea.Cmd {
 	return func() tea.Msg {
-		scanner := workspace.NewScanner(config, cache)
+		if scanner == nil {
+			return workspaceScanMsg{err: fmt.Errorf("workspace scanner not available")}
+		}
+
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -729,21 +736,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "r":
 			if m.currentMode == workspaceMode {
-				// Refresh workspace scan
-				if m.currentWorkspace != nil && m.scanner != nil {
-					// Scan only the current workspace using incremental scanner
-					m.scanning = true
-					return m, tea.Batch(
-						scanSingleWorkspaceIncremental(m.scanner, m.currentWorkspace),
-						tickCmd(),
-					)
-				} else if m.workspaceConfig != nil && m.repoCache != nil {
-					// Fallback: scan all workspaces if no current workspace selected
-					m.scanning = true
-					return m, tea.Batch(
-						scanWorkspaces(m.workspaceConfig, m.repoCache),
-						tickCmd(),
-					)
+				if cmd := m.startWorkspaceScan(); cmd != nil {
+					return m, cmd
 				}
 			} else {
 				// Refresh current repository with incremental loading
@@ -853,6 +847,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.repos = m.scanner.GetCachedRepos()
 						m.updateFilteredRepos()
 					}
+
+					if cmd := m.startWorkspaceScan(); cmd != nil {
+						return m, cmd
+					}
 				}
 			} else if m.activePanel == topPanel && m.currentMode == filesMode && m.status != nil && m.selectedFile < len(m.status.Files) {
 				file := m.status.Files[m.selectedFile]
@@ -927,10 +925,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Load cached repos immediately
 			m.repos = m.scanner.GetCachedRepos()
 
-			// Smart startup: restore last session or show workspace selection
-			cmd := m.smartStartup()
-			if cmd != nil {
-				return m, cmd
+			var cmds []tea.Cmd
+			if startupCmd := m.smartStartup(); startupCmd != nil {
+				cmds = append(cmds, startupCmd)
+			}
+
+			if scanCmd := m.startWorkspaceScan(); scanCmd != nil {
+				cmds = append(cmds, scanCmd)
+			}
+
+			if m.workspaceConfig != nil && len(m.workspaceConfig.Workspaces) > 0 {
+				cmds = append(cmds, scheduleAutoScan())
+			}
+
+			switch len(cmds) {
+			case 0:
+				return m, nil
+			case 1:
+				return m, cmds[0]
+			default:
+				return m, tea.Batch(cmds...)
 			}
 		}
 	case incrementalScanInitMsg:
@@ -951,6 +965,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.incrementalScanCh != nil && m.scanner != nil {
 			return m, incrementalScanNextCmd(m.scanner, m.incrementalScanCh, m.incrementalCancel)
 		}
+	case autoScanMsg:
+		if m.scanning {
+			return m, nil
+		}
+		if cmd := m.startWorkspaceScan(); cmd != nil {
+			return m, cmd
+		}
+		if m.workspaceConfig != nil && len(m.workspaceConfig.Workspaces) > 0 {
+			return m, scheduleAutoScan()
+		}
+		return m, nil
 	case workspaceScanMsg:
 		if m.incrementalCancel != nil {
 			m.incrementalCancel = nil
@@ -958,11 +983,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.incrementalScanCh = nil
 		m.scanning = false
 		m.lastScanTime = time.Now()
+		var cmds []tea.Cmd
 		if msg.err == nil {
+			m.err = nil
 			// Always load the complete cached repo list
 			// Let updateFilteredRepos() handle workspace filtering for display
 			m.repos = m.scanner.GetCachedRepos()
 			m.updateFilteredRepos()
+		} else if m.err == nil {
+			m.err = msg.err
+		}
+		if m.workspaceConfig != nil && len(m.workspaceConfig.Workspaces) > 0 {
+			cmds = append(cmds, scheduleAutoScan())
+		}
+		switch len(cmds) {
+		case 0:
+			return m, nil
+		case 1:
+			return m, cmds[0]
+		default:
+			return m, tea.Batch(cmds...)
 		}
 	case tickMsg:
 		// Continue ticking if scanning, editing workspace, in search mode, or showing modal
@@ -1058,6 +1098,43 @@ func (m *model) smartStartup() tea.Cmd {
 	}
 
 	return nil
+}
+
+func (m *model) startWorkspaceScan() tea.Cmd {
+	if m.scanner == nil {
+		return nil
+	}
+
+	if m.currentWorkspace == nil {
+		if m.workspaceConfig == nil || m.repoCache == nil || len(m.workspaceConfig.Workspaces) == 0 {
+			return nil
+		}
+	}
+
+	if m.incrementalCancel != nil {
+		m.incrementalCancel()
+		m.incrementalCancel = nil
+	}
+	m.incrementalScanCh = nil
+
+	var scanCmd tea.Cmd
+	if m.currentWorkspace != nil {
+		scanCmd = scanSingleWorkspaceIncremental(m.scanner, m.currentWorkspace)
+	} else {
+		scanCmd = scanWorkspaces(m.scanner)
+	}
+	if scanCmd == nil {
+		return nil
+	}
+
+	m.scanning = true
+	return tea.Batch(scanCmd, tickCmd())
+}
+
+func scheduleAutoScan() tea.Cmd {
+	return tea.Tick(autoScanInterval, func(time.Time) tea.Msg {
+		return autoScanMsg{}
+	})
 }
 
 func (m model) View() string {
