@@ -16,8 +16,8 @@ import (
 type panel int
 
 const (
-	topPanel panel = iota    // commits or files (based on mode)
-	bottomPanel             // details/diff
+	topPanel    panel = iota // commits or files (based on mode)
+	bottomPanel              // details/diff
 )
 
 type viewMode int
@@ -36,46 +36,46 @@ const (
 )
 
 type model struct {
-	width      int
-	height     int
-	ready      bool
-	repo       *git.Repository
-	commits    []git.Commit
-	branches   []git.Branch
-	status     *git.Status
-	remotes    []git.Remote
-	stashes    []git.Stash
-	activePanel panel
-	currentMode viewMode
+	width          int
+	height         int
+	ready          bool
+	repo           *git.Repository
+	commits        []git.Commit
+	branches       []git.Branch
+	status         *git.Status
+	remotes        []git.Remote
+	stashes        []git.Stash
+	activePanel    panel
+	currentMode    viewMode
 	selectedCommit int
 	selectedBranch int
 	selectedFile   int
-	err        error
+	err            error
 	// Branch operations state
-	showingBranchMenu bool
-	creatingBranch    bool
-	branchInput       string
+	showingBranchMenu  bool
+	creatingBranch     bool
+	branchInput        string
 	selectedBranchMenu int
 	// Diff view state
-	currentDiff    string
+	currentDiff      string
 	diffScrollOffset int
 	// Workspace state
-	workspaceConfig  *workspace.Config
-	repoCache        *workspace.RepoCache
-	scanner          *workspace.Scanner
-	repos            []workspace.RepoInfo
-	selectedRepo     int
-	scanning         bool
-	lastScanTime     time.Time
-	loadingRepo      bool // true while loading repository basics
-	loadingMetadata  bool // true while loading commits/branches/etc
+	workspaceConfig *workspace.Config
+	repoCache       *workspace.RepoCache
+	scanner         *workspace.Scanner
+	repos           []workspace.RepoInfo
+	selectedRepo    int
+	scanning        bool
+	lastScanTime    time.Time
+	loadingRepo     bool // true while loading repository basics
+	loadingMetadata bool // true while loading commits/branches/etc
 
 	// Workspace management state
 	selectedWorkspace int
 	editingWorkspace  bool
 	newWorkspaceName  string
 	newWorkspacePath  string
-	editingField      int  // 0 = name, 1 = path
+	editingField      int                  // 0 = name, 1 = path
 	currentWorkspace  *workspace.Workspace // currently selected workspace
 	searchMode        bool                 // whether we're in search mode
 	filterText        string               // filter text for repo search
@@ -83,8 +83,8 @@ type model struct {
 	scrollOffset      int                  // scroll offset for repo list
 
 	// Modal state
-	showingModal      bool // whether modal is displayed
-	modalMode         modalType // what type of modal to show
+	showingModal bool      // whether modal is displayed
+	modalMode    modalType // what type of modal to show
 }
 
 func initialModel() model {
@@ -598,7 +598,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.editingWorkspace = true
 						m.newWorkspaceName = ""
 						m.newWorkspacePath = ""
-						m.editingField = 0 // Start with name field
+						m.editingField = 0  // Start with name field
 						return m, tickCmd() // Continue ticking for cursor animation
 					} else if m.selectedWorkspace < len(m.workspaceConfig.Workspaces) {
 						// Open workspace - show repos from this workspace only
@@ -843,7 +843,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.editingWorkspace = true
 					m.newWorkspaceName = ""
 					m.newWorkspacePath = ""
-					m.editingField = 0 // Start with name field
+					m.editingField = 0  // Start with name field
 					return m, tickCmd() // Start tick for cursor animation
 				} else if m.selectedWorkspace < len(m.workspaceConfig.Workspaces) {
 					// Open workspace - show repos from this workspace only
@@ -965,21 +965,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Refresh repository with incremental loading
 			m.loadingRepo = true
 			m.loadingMetadata = true
-			return m, loadRepositoryIncremental(".")
+			repoPath := "."
+			if m.repo != nil {
+				repoPath = m.repo.Path
+			}
+			return m, loadRepositoryIncremental(repoPath)
 		}
 	case fileOperationMsg:
 		if msg.err == nil {
 			// Refresh repository with incremental loading
 			m.loadingRepo = true
 			m.loadingMetadata = true
-			return m, loadRepositoryIncremental(".")
+			repoPath := "."
+			if m.repo != nil {
+				repoPath = m.repo.Path
+			}
+			return m, loadRepositoryIncremental(repoPath)
 		}
 	case branchOperationMsg:
 		if msg.err == nil {
 			// Refresh repository with incremental loading
 			m.loadingRepo = true
 			m.loadingMetadata = true
-			return m, loadRepositoryIncremental(".")
+			repoPath := "."
+			if m.repo != nil {
+				repoPath = m.repo.Path
+			}
+			return m, loadRepositoryIncremental(repoPath)
 		}
 	}
 	return m, nil
@@ -1087,19 +1099,19 @@ func (m model) View() string {
 			Background(lipgloss.Color("235")).
 			Padding(1).
 			Margin(1)
-		
+
 		prompt := fmt.Sprintf("Create new branch: %s█", m.branchInput)
 		promptHelp := "Enter: create • Esc: cancel"
-		
+
 		overlay := promptStyle.Render(prompt + "\n" + promptHelp)
-		
+
 		// Position overlay in center
 		overlayHeight := 5
 		overlayTop := (m.height - overlayHeight) / 2
-		
+
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, result) +
-			lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, 
-				strings.Repeat("\n", overlayTop) + overlay)
+			lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top,
+				strings.Repeat("\n", overlayTop)+overlay)
 	}
 
 	// Show modal overlay
@@ -1275,7 +1287,7 @@ func (m model) renderModalOverlay(background string) string {
 
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, background) +
 			lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top,
-				strings.Repeat("\n", overlayTop) + modal)
+				strings.Repeat("\n", overlayTop)+modal)
 	}
 
 	return background
@@ -1364,7 +1376,6 @@ func max(a, b int) int {
 	return b
 }
 
-
 func (m model) renderCommits(width, height int) string {
 	panelStyle := lipgloss.NewStyle().
 		Width(width).
@@ -1403,28 +1414,28 @@ func (m model) renderCommits(width, height int) string {
 		if i >= height-3 {
 			break
 		}
-		
+
 		style := itemStyle
 		if m.activePanel == topPanel && i == m.selectedCommit {
 			style = selectedStyle
 		}
-		
+
 		timeStyle := lipgloss.NewStyle().
 			Foreground(lipgloss.Color("242"))
-		
+
 		hash := hashStyle.Render(commit.ShortHash)
 		relativeTime := git.FormatRelativeTime(commit.Time)
 		timeText := timeStyle.Render(relativeTime)
-		
+
 		// Calculate available space for subject
 		prefixLen := len(commit.ShortHash) + len(relativeTime) + 4 // spaces and separators
 		maxSubjectLen := width - prefixLen - 4
-		
+
 		subject := commit.Subject
 		if len(subject) > maxSubjectLen && maxSubjectLen > 3 {
 			subject = subject[:maxSubjectLen-3] + "..."
 		}
-		
+
 		line := fmt.Sprintf("%s %s %s", hash, timeText, subject)
 		content = append(content, style.Width(width-2).Render(line))
 	}
@@ -1482,7 +1493,7 @@ func (m model) renderFiles(width, height int) string {
 
 			var statusChar string
 			var statusStyle lipgloss.Style
-			
+
 			if file.Staged != "" {
 				switch file.Staged {
 				case "added":
@@ -1724,10 +1735,10 @@ func (m model) renderCommitDetails(width, height int) string {
 	}
 
 	commit := m.commits[m.selectedCommit]
-	
+
 	timeStyle := lipgloss.NewStyle().
 		Foreground(lipgloss.Color("114"))
-	
+
 	content := []string{
 		title,
 		"",
@@ -1771,7 +1782,7 @@ func (m model) renderHelp() string {
 			"w: workspace/manage • h: history mode • s: files mode • b: branches • f: fetch • p: pull • P: push • r: refresh • q: quit",
 		}
 	}
-	
+
 	return helpStyle.Render(strings.Join(helpLines, "\n"))
 }
 
@@ -2136,7 +2147,6 @@ func (m model) renderWorkspaceManager(width, height int) string {
 	selectedStyle := lipgloss.NewStyle().
 		PaddingLeft(1).
 		Background(lipgloss.Color("238"))
-
 
 	title := titleStyle.Render("⚙️  Workspace Management")
 	content := []string{title, ""}
