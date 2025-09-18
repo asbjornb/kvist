@@ -242,6 +242,11 @@ type repoDiscoveredMsg struct {
 	err  error
 }
 
+type repoCacheUpdatedMsg struct {
+	repo workspace.RepoInfo
+	err  error
+}
+
 type tickMsg time.Time
 
 func loadDiff(repoPath string, filePath string, staged bool, isUntracked bool) tea.Cmd {
@@ -363,6 +368,28 @@ func incrementalScanNextCmd(scanner *workspace.Scanner, ch <-chan workspace.Repo
 		}
 
 		return repoDiscoveredMsg{repo: repo}
+	}
+}
+
+func refreshRepoMetadata(scanner *workspace.Scanner, repoPath string) tea.Cmd {
+	return func() tea.Msg {
+		if scanner == nil || repoPath == "" {
+			return repoCacheUpdatedMsg{err: fmt.Errorf("workspace scanner not available")}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := scanner.UpdateRepo(ctx, repoPath); err != nil {
+			return repoCacheUpdatedMsg{err: err}
+		}
+
+		repo, exists := scanner.GetRepo(repoPath)
+		if !exists {
+			return repoCacheUpdatedMsg{err: fmt.Errorf("repository not found in cache")}
+		}
+
+		return repoCacheUpdatedMsg{repo: repo}
 	}
 }
 
@@ -965,6 +992,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.incrementalScanCh != nil && m.scanner != nil {
 			return m, incrementalScanNextCmd(m.scanner, m.incrementalScanCh, m.incrementalCancel)
 		}
+	case repoCacheUpdatedMsg:
+		if msg.err != nil {
+			if m.err == nil {
+				m.err = msg.err
+			}
+			return m, nil
+		}
+		if m.scanner != nil {
+			m.repos = m.scanner.GetCachedRepos()
+			m.updateFilteredRepos()
+		}
+		return m, nil
 	case autoScanMsg:
 		if m.scanning {
 			return m, nil
@@ -1018,7 +1057,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.repo != nil {
 				repoPath = m.repo.Path
 			}
-			return m, loadRepositoryIncremental(repoPath)
+			cmds := []tea.Cmd{loadRepositoryIncremental(repoPath)}
+			if m.scanner != nil && m.repo != nil {
+				cmds = append(cmds, refreshRepoMetadata(m.scanner, m.repo.Path))
+			}
+			return m, tea.Batch(cmds...)
 		}
 	case fileOperationMsg:
 		if msg.err == nil {
