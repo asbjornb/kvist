@@ -1803,10 +1803,21 @@ func (m model) renderFiles(width, height int) string {
 	if m.status == nil || len(m.status.Files) == 0 {
 		content = append(content, "  No changes")
 	} else {
-		for i, file := range m.status.Files {
-			if i >= height-3 {
-				break
-			}
+		// Calculate scrolling bounds
+		visibleItems := height - 3 // Reserve space for title and margins
+
+		// Calculate scroll window to keep selected file visible
+		startIdx := 0
+		if m.selectedFile >= visibleItems {
+			startIdx = m.selectedFile - visibleItems + 1
+		}
+		endIdx := startIdx + visibleItems
+		if endIdx > len(m.status.Files) {
+			endIdx = len(m.status.Files)
+		}
+
+		for i := startIdx; i < endIdx; i++ {
+			file := m.status.Files[i]
 
 			style := itemStyle
 			if m.activePanel == topPanel && m.currentMode == filesMode && i == m.selectedFile {
