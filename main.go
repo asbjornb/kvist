@@ -254,6 +254,16 @@ type repoCacheUpdatedMsg struct {
 
 type tickMsg time.Time
 
+type autoRefreshMsg time.Time
+
+const autoRefreshInterval = 5 * time.Second
+
+func autoRefreshCmd() tea.Cmd {
+	return tea.Tick(autoRefreshInterval, func(t time.Time) tea.Msg {
+		return autoRefreshMsg(t)
+	})
+}
+
 func loadDiff(repoPath string, filePath string, staged bool, isUntracked bool) tea.Cmd {
 	return func() tea.Msg {
 		if isUntracked {
@@ -1051,8 +1061,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Load diff for first file immediately to show something useful
 		if m.currentMode == filesMode && m.repo != nil && m.status != nil && len(m.status.Files) > 0 {
 			file := m.status.Files[0]
-			return m, loadDiff(m.repo.Path, file.Path, file.Staged != "", file.Unstaged == "untracked")
+			return m, tea.Batch(
+				loadDiff(m.repo.Path, file.Path, file.Staged != "", file.Unstaged == "untracked"),
+				autoRefreshCmd(), // Start auto-refresh timer
+			)
 		}
+		// Start auto-refresh even if no files to diff
+		return m, autoRefreshCmd()
 	case repoMetadataLoadedMsg:
 		// Slow loading: commits, branches, etc loaded - history view now available
 		m.loadingMetadata = false
@@ -1178,6 +1193,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.scanning || m.editingWorkspace || m.searchMode || m.showingModal {
 			return m, tickCmd()
 		}
+	case autoRefreshMsg:
+		// Periodic auto-refresh of git status when viewing a repo
+		if m.repo != nil && !m.loadingRepo {
+			// Capture repo for closure
+			repo := m.repo
+			// Reload git status only (faster than full reload)
+			return m, tea.Batch(
+				func() tea.Msg {
+					status, err := git.GetStatus(repo.Path)
+					if err != nil {
+						return repoBasicsLoadedMsg{err: err}
+					}
+					return repoBasicsLoadedMsg{repo: repo, status: status}
+				},
+				autoRefreshCmd(), // Schedule next refresh
+			)
+		}
+		// If no repo loaded, don't schedule next refresh
+		return m, nil
 	case gitOperationMsg:
 		if msg.err == nil {
 			// Refresh repository with incremental loading
