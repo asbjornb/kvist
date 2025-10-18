@@ -86,6 +86,10 @@ type model struct {
 	incrementalScanCh <-chan workspace.RepoInfo
 	incrementalCancel context.CancelFunc
 
+	// Directory autocomplete state
+	dirSuggestions      []string // directory suggestions for path autocomplete
+	selectedSuggestion  int      // which suggestion is highlighted
+
 	// Modal state
 	showingModal bool      // whether modal is displayed
 	modalMode    modalType // what type of modal to show
@@ -480,26 +484,54 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.newWorkspaceName = ""
 				m.newWorkspacePath = ""
 				m.editingField = 0
+				m.dirSuggestions = nil
+				m.selectedSuggestion = 0
 			case "tab":
-				// Switch between name and path fields
-				m.editingField = (m.editingField + 1) % 2
+				// If in path field and have suggestions, autocomplete
+				if m.editingField == 1 && len(m.dirSuggestions) > 0 && m.selectedSuggestion < len(m.dirSuggestions) {
+					m.newWorkspacePath = m.dirSuggestions[m.selectedSuggestion]
+					// Add trailing slash if not present to allow continuing
+					if m.newWorkspacePath[len(m.newWorkspacePath)-1] != '/' {
+						m.newWorkspacePath += "/"
+					}
+					m.updateDirSuggestions()
+				} else {
+					// Switch between name and path fields
+					m.editingField = (m.editingField + 1) % 2
+					if m.editingField == 1 {
+						m.updateDirSuggestions()
+					}
+				}
+			case "up":
+				// Navigate suggestions if in path field
+				if m.editingField == 1 && len(m.dirSuggestions) > 0 {
+					if m.selectedSuggestion > 0 {
+						m.selectedSuggestion--
+					}
+				}
+			case "down":
+				// Navigate suggestions if in path field
+				if m.editingField == 1 && len(m.dirSuggestions) > 0 {
+					if m.selectedSuggestion < len(m.dirSuggestions)-1 {
+						m.selectedSuggestion++
+					}
+				}
 			case "enter":
 				if m.newWorkspaceName != "" && m.newWorkspacePath != "" && m.workspaceConfig != nil {
 					// Add new workspace
-					newWorkspace := workspace.Workspace{
-						Name: m.newWorkspaceName,
-						Path: m.newWorkspacePath,
-					}
-					m.workspaceConfig.Workspaces = append(m.workspaceConfig.Workspaces, newWorkspace)
-					if err := m.workspaceConfig.Save(); err == nil {
+					if err := m.workspaceConfig.AddWorkspace(m.newWorkspaceName, m.newWorkspacePath); err == nil {
 						m.editingWorkspace = false
 						m.newWorkspaceName = ""
 						m.newWorkspacePath = ""
 						m.editingField = 0
+						m.dirSuggestions = nil
+						m.selectedSuggestion = 0
 						// Refresh repos if we have a scanner
 						if m.scanner != nil {
 							m.repos = m.scanner.GetCachedRepos()
 						}
+					} else {
+						m.err = err
 					}
 				}
 			case "backspace":
@@ -508,6 +540,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.newWorkspaceName = m.newWorkspaceName[:len(m.newWorkspaceName)-1]
 				} else if m.editingField == 1 && len(m.newWorkspacePath) > 0 {
 					m.newWorkspacePath = m.newWorkspacePath[:len(m.newWorkspacePath)-1]
+					m.updateDirSuggestions()
 				}
 			default:
 				// Add printable characters to the active field
@@ -516,6 +549,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.newWorkspaceName += msg.String()
 					} else {
 						m.newWorkspacePath += msg.String()
+						m.updateDirSuggestions()
 					}
 				}
 			}
@@ -560,20 +594,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "up", "k":
 				if m.modalMode == workspacePickerModal {
-					if m.selectedWorkspace > 0 {
+					if m.editingWorkspace && m.editingField == 1 && len(m.dirSuggestions) > 0 {
+						// Navigate suggestions
+						if m.selectedSuggestion > 0 {
+							m.selectedSuggestion--
+						}
+					} else if !m.editingWorkspace && m.selectedWorkspace > 0 {
 						m.selectedWorkspace--
 					}
 				}
 			case "down", "j":
 				if m.modalMode == workspacePickerModal {
-					maxWorkspaces := len(m.workspaceConfig.Workspaces)
-					if m.editingWorkspace {
-						// When editing, don't allow selection beyond actual workspaces
-					} else {
+					if m.editingWorkspace && m.editingField == 1 && len(m.dirSuggestions) > 0 {
+						// Navigate suggestions
+						if m.selectedSuggestion < len(m.dirSuggestions)-1 {
+							m.selectedSuggestion++
+						}
+					} else if !m.editingWorkspace {
+						maxWorkspaces := len(m.workspaceConfig.Workspaces)
 						maxWorkspaces++ // Add 1 for "Add New Workspace" option
-					}
-					if m.selectedWorkspace < maxWorkspaces-1 {
-						m.selectedWorkspace++
+						if m.selectedWorkspace < maxWorkspaces-1 {
+							m.selectedWorkspace++
+						}
 					}
 				}
 			case " ", "enter":
@@ -618,8 +660,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						// "Add New Workspace" selected
 						m.editingWorkspace = true
 						m.newWorkspaceName = ""
-						m.newWorkspacePath = ""
-						m.editingField = 0  // Start with name field
+						m.newWorkspacePath = "~/"
+						m.editingField = 0 // Start with name field
+						m.updateDirSuggestions()
 						return m, tickCmd() // Continue ticking for cursor animation
 					} else if m.selectedWorkspace < len(m.workspaceConfig.Workspaces) {
 						// Open workspace - show repos from this workspace only
@@ -647,7 +690,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "tab":
 				// Switch between name and path fields when editing
 				if m.modalMode == workspacePickerModal && m.editingWorkspace {
-					m.editingField = (m.editingField + 1) % 2
+					// If in path field and have suggestions, autocomplete
+					if m.editingField == 1 && len(m.dirSuggestions) > 0 && m.selectedSuggestion < len(m.dirSuggestions) {
+						m.newWorkspacePath = m.dirSuggestions[m.selectedSuggestion]
+						// Add trailing slash if not present to allow continuing
+						if m.newWorkspacePath[len(m.newWorkspacePath)-1] != '/' {
+							m.newWorkspacePath += "/"
+						}
+						m.updateDirSuggestions()
+					} else {
+						// Switch between name and path fields
+						m.editingField = (m.editingField + 1) % 2
+						if m.editingField == 1 {
+							m.updateDirSuggestions()
+						}
+					}
 				}
 			case "backspace":
 				if m.modalMode == workspacePickerModal && m.editingWorkspace {
@@ -655,6 +712,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.newWorkspaceName = m.newWorkspaceName[:len(m.newWorkspaceName)-1]
 					} else if m.editingField == 1 && len(m.newWorkspacePath) > 0 {
 						m.newWorkspacePath = m.newWorkspacePath[:len(m.newWorkspacePath)-1]
+						m.updateDirSuggestions()
 					}
 				}
 			default:
@@ -665,6 +723,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							m.newWorkspaceName += msg.String()
 						} else {
 							m.newWorkspacePath += msg.String()
+							m.updateDirSuggestions()
 						}
 					}
 				}
@@ -850,8 +909,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// "Add New Workspace" selected
 					m.editingWorkspace = true
 					m.newWorkspaceName = ""
-					m.newWorkspacePath = ""
-					m.editingField = 0  // Start with name field
+					m.newWorkspacePath = "~/"
+					m.editingField = 0 // Start with name field
+					m.updateDirSuggestions()
 					return m, tickCmd() // Start tick for cursor animation
 				} else if m.selectedWorkspace < len(m.workspaceConfig.Workspaces) {
 					// Open workspace - show repos from this workspace only
@@ -1381,8 +1441,48 @@ func (m model) renderModalOverlay(background string) string {
 			content = append(content,
 				fmt.Sprintf("  %s %s%s", nameLabel, m.newWorkspaceName, nameCursor),
 				fmt.Sprintf("  %s %s%s", pathLabel, m.newWorkspacePath, pathCursor),
+			)
+
+			// Show directory suggestions if in path field
+			if m.editingField == 1 && len(m.dirSuggestions) > 0 {
+				content = append(content, "")
+				suggestionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+				selectedSuggestionStyle := lipgloss.NewStyle().
+					Foreground(lipgloss.Color("214")).
+					Background(lipgloss.Color("238"))
+
+				maxVisible := 5
+				totalSuggestions := len(m.dirSuggestions)
+
+				// Calculate scroll window to keep selected item visible
+				scrollOffset := 0
+				if m.selectedSuggestion >= maxVisible {
+					scrollOffset = m.selectedSuggestion - maxVisible + 1
+				}
+				endIdx := scrollOffset + maxVisible
+				if endIdx > totalSuggestions {
+					endIdx = totalSuggestions
+				}
+
+				// Show range indicator if there are more items
+				if totalSuggestions > maxVisible {
+					rangeText := fmt.Sprintf("  [%d-%d of %d]", scrollOffset+1, endIdx, totalSuggestions)
+					content = append(content, suggestionStyle.Render(rangeText))
+				}
+
+				for i := scrollOffset; i < endIdx; i++ {
+					suggestion := m.dirSuggestions[i]
+					if i == m.selectedSuggestion {
+						content = append(content, selectedSuggestionStyle.Render("  ▶ "+suggestion))
+					} else {
+						content = append(content, suggestionStyle.Render("    "+suggestion))
+					}
+				}
+			}
+
+			content = append(content,
 				"",
-				"  Tab: next field • Enter: create • Esc: cancel",
+				"  Tab: autocomplete/next field • ↑↓: navigate • Enter: create • Esc: cancel",
 			)
 		} else {
 			// Show workspace list
@@ -2241,6 +2341,12 @@ func (m *model) updateFilteredRepos() {
 	}
 }
 
+// updateDirSuggestions updates directory suggestions based on current path input
+func (m *model) updateDirSuggestions() {
+	m.dirSuggestions = workspace.GetDirectorySuggestions(m.newWorkspacePath)
+	m.selectedSuggestion = 0
+}
+
 func formatRelativeTime(t time.Time) string {
 	duration := time.Since(t)
 	if duration < time.Minute {
@@ -2331,16 +2437,56 @@ func (m model) renderWorkspaceManager(width, height int) string {
 		}
 
 		// Help text positioned to the right with proper spacing
-		nameHelp := strings.Repeat(" ", namePadding) + "(e.g., home, work, projects)"
-		pathHelp := strings.Repeat(" ", pathPadding) + "(e.g., /mnt/c/code/home, ~/projects)"
+		nameHelp := strings.Repeat(" ", namePadding) + "(e.g., Code, Projects, Work)"
+		pathHelp := strings.Repeat(" ", pathPadding) + "(type to see suggestions)"
 
 		content = append(content,
 			"📝 Add New Workspace:",
 			"",
 			fmt.Sprintf("%sName: %s%s", nameIndicator, nameValue, nameHelp),
 			fmt.Sprintf("%sPath: %s%s", pathIndicator, pathValue, pathHelp),
+		)
+
+		// Show directory suggestions if in path field
+		if m.editingField == 1 && len(m.dirSuggestions) > 0 {
+			content = append(content, "")
+			suggestionStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("240"))
+			selectedSuggestionStyle := lipgloss.NewStyle().
+				Foreground(lipgloss.Color("214")).
+				Background(lipgloss.Color("238"))
+
+			maxVisible := 5
+			totalSuggestions := len(m.dirSuggestions)
+
+			// Calculate scroll window to keep selected item visible
+			scrollOffset := 0
+			if m.selectedSuggestion >= maxVisible {
+				scrollOffset = m.selectedSuggestion - maxVisible + 1
+			}
+			endIdx := scrollOffset + maxVisible
+			if endIdx > totalSuggestions {
+				endIdx = totalSuggestions
+			}
+
+			// Show range indicator if there are more items
+			if totalSuggestions > maxVisible {
+				rangeText := fmt.Sprintf("  [%d-%d of %d]", scrollOffset+1, endIdx, totalSuggestions)
+				content = append(content, suggestionStyle.Render(rangeText))
+			}
+
+			for i := scrollOffset; i < endIdx; i++ {
+				suggestion := m.dirSuggestions[i]
+				if i == m.selectedSuggestion {
+					content = append(content, selectedSuggestionStyle.Render("  ▶ "+suggestion))
+				} else {
+					content = append(content, suggestionStyle.Render("    "+suggestion))
+				}
+			}
+		}
+
+		content = append(content,
 			"",
-			"Tab: Switch fields • Enter: Save • Esc: Cancel",
+			"Tab: autocomplete/next field • ↑↓: navigate • Enter: Save • Esc: Cancel",
 		)
 	} else {
 		if m.workspaceConfig != nil {
