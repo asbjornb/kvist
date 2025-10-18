@@ -1657,9 +1657,18 @@ func (m model) renderHeader() string {
 }
 
 func (m model) renderContent(height int) string {
-	// Simple two-panel vertical layout
-	topHeight := height * 2 / 3
-	bottomHeight := height - topHeight
+	// Two-panel vertical layout with mode-specific splits
+	var topHeight, bottomHeight int
+
+	// Files mode: give more space to diff (bottom panel)
+	// Other modes: balanced split
+	if m.currentMode == filesMode {
+		topHeight = height * 2 / 5      // 40% for file list
+		bottomHeight = height - topHeight // 60% for diff
+	} else {
+		topHeight = height * 2 / 3      // 66% for top panel
+		bottomHeight = height - topHeight // 33% for bottom panel
+	}
 
 	// Content depends on current mode
 	var top, bottom string
