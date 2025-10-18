@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -111,16 +112,19 @@ func (c *Config) AddWorkspace(name, path string) error {
 		}
 	}
 
+	// Expand ~ to home directory
+	expandedPath := ExpandPath(path)
+
 	// Verify path exists and is a directory
-	if stat, err := os.Stat(path); err != nil {
+	if stat, err := os.Stat(expandedPath); err != nil {
 		return fmt.Errorf("path does not exist: %w", err)
 	} else if !stat.IsDir() {
-		return fmt.Errorf("path is not a directory: %s", path)
+		return fmt.Errorf("path is not a directory: %s", expandedPath)
 	}
 
 	c.Workspaces = append(c.Workspaces, Workspace{
 		Name: name,
-		Path: path,
+		Path: expandedPath,
 	})
 
 	return c.Save()
@@ -194,4 +198,108 @@ func getConfigPath() string {
 func getCachePath() string {
 	homeDir, _ := os.UserHomeDir()
 	return filepath.Join(homeDir, CacheDir, CacheFile)
+}
+
+// ExpandPath expands ~ to the user's home directory
+func ExpandPath(path string) string {
+	if path == "" {
+		return path
+	}
+
+	if path == "~" {
+		homeDir, _ := os.UserHomeDir()
+		return homeDir
+	}
+
+	if len(path) >= 2 && path[:2] == "~/" {
+		homeDir, _ := os.UserHomeDir()
+		return filepath.Join(homeDir, path[2:])
+	}
+
+	return path
+}
+
+// ListDirectories returns a list of directories in the given path
+// Returns empty slice on error
+func ListDirectories(path string) []string {
+	expandedPath := ExpandPath(path)
+
+	entries, err := os.ReadDir(expandedPath)
+	if err != nil {
+		return []string{}
+	}
+
+	var dirs []string
+	for _, entry := range entries {
+		if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") {
+			dirs = append(dirs, entry.Name())
+		}
+	}
+
+	return dirs
+}
+
+// GetDirectorySuggestions returns directory suggestions for autocomplete
+// based on the current input path
+func GetDirectorySuggestions(input string) []string {
+	if input == "" {
+		return []string{}
+	}
+
+	// Expand the path to get the actual filesystem path
+	expandedPath := ExpandPath(input)
+
+	// Get the directory to search in and the prefix to match
+	dir := filepath.Dir(expandedPath)
+	prefix := filepath.Base(expandedPath)
+
+	// If input ends with /, we're looking for subdirectories
+	if input[len(input)-1] == '/' {
+		dir = expandedPath
+		prefix = ""
+	}
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return []string{}
+	}
+
+	var suggestions []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		// Skip hidden directories
+		if entry.Name()[0] == '.' {
+			continue
+		}
+
+		// Check if name matches prefix
+		if prefix == "" || strings.HasPrefix(strings.ToLower(entry.Name()), strings.ToLower(prefix)) {
+			// Build the suggestion path using the original input format
+			var suggestion string
+			if input == "~/" || input == "~" {
+				suggestion = "~/" + entry.Name()
+			} else if strings.HasPrefix(input, "~/") {
+				// Replace the last component with the matched entry
+				basePath := filepath.Dir(input)
+				if input[len(input)-1] == '/' {
+					suggestion = input + entry.Name()
+				} else {
+					suggestion = basePath + "/" + entry.Name()
+				}
+			} else {
+				// For absolute paths
+				if input[len(input)-1] == '/' {
+					suggestion = input + entry.Name()
+				} else {
+					suggestion = filepath.Join(filepath.Dir(input), entry.Name())
+				}
+			}
+			suggestions = append(suggestions, suggestion)
+		}
+	}
+
+	return suggestions
 }
