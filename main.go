@@ -73,12 +73,13 @@ type model struct {
 	loadingMetadata bool // true while loading commits/branches/etc
 
 	// Workspace management state
-	selectedWorkspace int
-	editingWorkspace  bool
-	newWorkspaceName  string
-	newWorkspacePath  string
-	editingField      int                  // 0 = name, 1 = path
-	currentWorkspace  *workspace.Workspace // currently selected workspace
+	selectedWorkspace   int
+	editingWorkspace    bool
+	editingWorkspaceIdx int    // index of workspace being edited, -1 for new workspace
+	newWorkspaceName    string
+	newWorkspacePath    string
+	editingField        int                  // 0 = name, 1 = path
+	currentWorkspace    *workspace.Workspace // currently selected workspace
 	searchMode        bool                 // whether we're in search mode
 	filterText        string               // filter text for repo search
 	filteredRepos     []workspace.RepoInfo // filtered list of repos
@@ -621,44 +622,76 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case " ", "enter":
 				if m.modalMode == workspacePickerModal && m.workspaceConfig != nil {
 					if m.editingWorkspace {
-						// Create new workspace
 						if m.newWorkspaceName != "" && m.newWorkspacePath != "" {
-							err := m.workspaceConfig.AddWorkspace(m.newWorkspaceName, m.newWorkspacePath)
-							if err != nil {
-								m.err = err
-							} else {
-								// Find the newly added workspace and select it
-								for i, ws := range m.workspaceConfig.Workspaces {
-									if ws.Name == m.newWorkspaceName {
-										m.currentWorkspace = &m.workspaceConfig.Workspaces[i]
-										break
+							if m.editingWorkspaceIdx >= 0 {
+								// Update existing workspace
+								expandedPath := workspace.ExpandPath(m.newWorkspacePath)
+
+								// Verify path exists and is a directory
+								if stat, err := os.Stat(expandedPath); err != nil {
+									m.err = fmt.Errorf("path does not exist: %w", err)
+								} else if !stat.IsDir() {
+									m.err = fmt.Errorf("path is not a directory: %s", expandedPath)
+								} else {
+									m.workspaceConfig.Workspaces[m.editingWorkspaceIdx].Name = m.newWorkspaceName
+									m.workspaceConfig.Workspaces[m.editingWorkspaceIdx].Path = expandedPath
+									if err := m.workspaceConfig.Save(); err == nil {
+										m.editingWorkspace = false
+										m.editingWorkspaceIdx = -1
+										m.newWorkspaceName = ""
+										m.newWorkspacePath = ""
+										m.dirSuggestions = nil
+										m.selectedSuggestion = 0
+										// Refresh repos if we have a scanner
+										if m.scanner != nil {
+											m.repos = m.scanner.GetCachedRepos()
+											m.updateFilteredRepos()
+										}
+									} else {
+										m.err = err
 									}
 								}
-
-								// Track this as the last accessed workspace
-								if m.scanner != nil {
-									m.scanner.UpdateLastWorkspace(m.currentWorkspace.Name)
-									// Save state to disk (best effort, don't block on errors)
-									go func() {
-										if m.scanner != nil {
-											_ = m.scanner.SaveCache()
+							} else {
+								// Create new workspace
+								err := m.workspaceConfig.AddWorkspace(m.newWorkspaceName, m.newWorkspacePath)
+								if err != nil {
+									m.err = err
+								} else {
+									// Find the newly added workspace and select it
+									for i, ws := range m.workspaceConfig.Workspaces {
+										if ws.Name == m.newWorkspaceName {
+											m.currentWorkspace = &m.workspaceConfig.Workspaces[i]
+											break
 										}
-									}()
-								}
+									}
 
-								// Close modal and load repos
-								m.showingModal = false
-								m.editingWorkspace = false
+									// Track this as the last accessed workspace
+									if m.scanner != nil {
+										m.scanner.UpdateLastWorkspace(m.currentWorkspace.Name)
+										// Save state to disk (best effort, don't block on errors)
+										go func() {
+											if m.scanner != nil {
+												_ = m.scanner.SaveCache()
+											}
+										}()
+									}
 
-								if m.scanner != nil {
-									m.repos = m.scanner.GetCachedRepos()
-									m.updateFilteredRepos()
+									// Close modal and load repos
+									m.showingModal = false
+									m.editingWorkspace = false
+									m.editingWorkspaceIdx = -1
+
+									if m.scanner != nil {
+										m.repos = m.scanner.GetCachedRepos()
+										m.updateFilteredRepos()
+									}
 								}
 							}
 						}
 					} else if m.selectedWorkspace == len(m.workspaceConfig.Workspaces) {
 						// "Add New Workspace" selected
 						m.editingWorkspace = true
+						m.editingWorkspaceIdx = -1
 						m.newWorkspaceName = ""
 						m.newWorkspacePath = "~/"
 						m.editingField = 0 // Start with name field
@@ -704,6 +737,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						if m.editingField == 1 {
 							m.updateDirSuggestions()
 						}
+					}
+				}
+			case "d":
+				// Delete workspace from modal
+				if m.modalMode == workspacePickerModal && !m.editingWorkspace && m.workspaceConfig != nil {
+					if m.selectedWorkspace < len(m.workspaceConfig.Workspaces) {
+						// Delete the selected workspace
+						workspaces := m.workspaceConfig.Workspaces
+						m.workspaceConfig.Workspaces = append(workspaces[:m.selectedWorkspace], workspaces[m.selectedWorkspace+1:]...)
+						if err := m.workspaceConfig.Save(); err == nil {
+							// Adjust selection if needed
+							if m.selectedWorkspace >= len(m.workspaceConfig.Workspaces) && m.selectedWorkspace > 0 {
+								m.selectedWorkspace--
+							}
+							// Refresh repos if we have a scanner
+							if m.scanner != nil {
+								m.repos = m.scanner.GetCachedRepos()
+								m.updateFilteredRepos()
+							}
+						} else {
+							m.err = err
+						}
+					}
+				}
+			case "e":
+				// Edit workspace from modal
+				if m.modalMode == workspacePickerModal && !m.editingWorkspace && m.workspaceConfig != nil {
+					if m.selectedWorkspace < len(m.workspaceConfig.Workspaces) {
+						// Enter edit mode for selected workspace
+						ws := m.workspaceConfig.Workspaces[m.selectedWorkspace]
+						m.editingWorkspace = true
+						m.editingWorkspaceIdx = m.selectedWorkspace
+						m.newWorkspaceName = ws.Name
+						m.newWorkspacePath = ws.Path
+						m.editingField = 0
+						m.updateDirSuggestions()
+						return m, tickCmd()
 					}
 				}
 			case "backspace":
@@ -1422,11 +1492,19 @@ func (m model) renderModalOverlay(background string) string {
 
 	switch m.modalMode {
 	case workspacePickerModal:
-		title := titleStyle.Render("📂 Select Workspace")
+		titleText := "📂 Select Workspace"
+		if m.editingWorkspace {
+			if m.editingWorkspaceIdx >= 0 {
+				titleText = "✏️  Edit Workspace"
+			} else {
+				titleText = "➕ Add Workspace"
+			}
+		}
+		title := titleStyle.Render(titleText)
 		content := []string{title, ""}
 
 		if m.editingWorkspace {
-			// Show workspace creation form
+			// Show workspace editing/creation form
 			nameLabel := "Name:"
 			pathLabel := "Path:"
 
@@ -1480,9 +1558,13 @@ func (m model) renderModalOverlay(background string) string {
 				}
 			}
 
+			helpAction := "create"
+			if m.editingWorkspaceIdx >= 0 {
+				helpAction = "update"
+			}
 			content = append(content,
 				"",
-				"  Tab: autocomplete/next field • ↑↓: navigate • Enter: create • Esc: cancel",
+				fmt.Sprintf("  Tab: autocomplete/next field • ↑↓: navigate • Enter: %s • Esc: cancel", helpAction),
 			)
 		} else {
 			// Show workspace list
@@ -1505,7 +1587,7 @@ func (m model) renderModalOverlay(background string) string {
 				}
 			}
 
-			content = append(content, "", "  Enter: select • Esc: close")
+			content = append(content, "", "  Enter: select • e: edit • d: delete • Esc: close")
 		}
 
 		modal := modalStyle.Render(strings.Join(content, "\n"))
