@@ -302,6 +302,15 @@ func GetStatus(repoPath string) (*Status, error) {
 			// Untracked file
 			b = b[2:] // skip "? "
 			path, rest := readToNul(b)
+
+			// Skip directories - git status may show untracked directories (like empty git repos)
+			// but we can't meaningfully diff them
+			fullPath := filepath.Join(repoPath, string(path))
+			if info, err := os.Stat(fullPath); err == nil && info.IsDir() {
+				b = rest
+				continue
+			}
+
 			status.Files = append(status.Files, FileStatus{
 				Path:     string(path),
 				Unstaged: "untracked",
