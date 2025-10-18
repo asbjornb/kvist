@@ -1454,10 +1454,12 @@ func (m model) renderBranchMenuOverlay(background string) string {
 
 	menu := menuStyle.Render(strings.Join(content, "\n"))
 
-	// Center the menu
+	// Position menu in center as a proper modal overlay
 	menuTop := (m.height - lipgloss.Height(menu)) / 2
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top,
-		background+strings.Repeat("\n", menuTop)+menu)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, background) +
+		lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top,
+			strings.Repeat("\n", menuTop)+menu)
 }
 
 func min(a, b int) int {
