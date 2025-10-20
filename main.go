@@ -905,8 +905,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if cmd := m.startWorkspaceScan(); cmd != nil {
 					return m, cmd
 				}
-			} else {
+			} else if m.currentMode != filesMode {
 				// Refresh current repository with incremental loading
+				// Note: filesMode has auto-refresh, manual refresh not needed
 				m.loadingRepo = true
 				m.loadingMetadata = true
 				return m, loadRepositoryIncremental(".")
@@ -1058,9 +1059,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.repo = msg.repo
 		m.status = msg.status
 
-		// Load diff for first file immediately to show something useful
+		// Load diff for currently selected file to preserve user's view during auto-refresh
 		if m.currentMode == filesMode && m.repo != nil && m.status != nil && len(m.status.Files) > 0 {
-			file := m.status.Files[0]
+			// Ensure selectedFile is within bounds after status update
+			if m.selectedFile >= len(m.status.Files) {
+				m.selectedFile = len(m.status.Files) - 1
+			}
+			// Load diff for the currently selected file, not always file[0]
+			file := m.status.Files[m.selectedFile]
 			return m, tea.Batch(
 				loadDiff(m.repo.Path, file.Path, file.Staged != "", file.Unstaged == "untracked"),
 				autoRefreshCmd(), // Start auto-refresh timer
