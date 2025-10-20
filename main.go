@@ -312,7 +312,10 @@ func loadCommitDiff(repoPath string, commitHash string) tea.Cmd {
 	return func() tea.Msg {
 		diff, err := git.GetCommitDiff(repoPath, commitHash)
 		if err != nil {
-			return diffLoadedMsg{diff: "", err: fmt.Errorf("failed to load diff for commit %s: %w", commitHash, err)}
+			// Include git's output in the error message for debugging
+			errMsg := fmt.Sprintf("Commit: %s\nRepo: %s\nError: %v\nGit output: %s",
+				commitHash, repoPath, err, diff)
+			return diffLoadedMsg{diff: "", err: fmt.Errorf("%s", errMsg)}
 		}
 		return diffLoadedMsg{diff: diff, err: nil}
 	}
