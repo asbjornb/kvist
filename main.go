@@ -2211,11 +2211,26 @@ func (m model) renderCommitDiff(width, height int) string {
 		Bold(true).
 		Foreground(lipgloss.Color("170"))
 
+	addStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("42")) // Green
+
+	removeStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("196")) // Red
+
+	lineNumStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("242")) // Gray
+
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("214")) // Orange
+
+	diffHeaderStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("226")).Bold(true) // Yellow
+
 	title := titleStyle.Render("Diff")
 	content := []string{title, ""}
 
 	if m.currentDiff == "" {
-		content = append(content, lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Render("  Loading diff..."))
+		content = append(content, lineNumStyle.Render("  Loading diff..."))
 		return panelStyle.Render(strings.Join(content, "\n"))
 	}
 
@@ -2240,19 +2255,34 @@ func (m model) renderCommitDiff(width, height int) string {
 			switch {
 			case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
 				// File headers
-				styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render(line)
-			case strings.HasPrefix(line, "+"):
-				// Additions
-				styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("green")).Render(line)
-			case strings.HasPrefix(line, "-"):
-				// Deletions
-				styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("red")).Render(line)
+				if len(line) > maxWidth {
+					line = line[:maxWidth-3] + "..."
+				}
+				styledLine = headerStyle.Render(line)
 			case strings.HasPrefix(line, "@@"):
 				// Hunk headers
-				styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("cyan")).Bold(true).Render(line)
+				if len(line) > maxWidth {
+					line = line[:maxWidth-3] + "..."
+				}
+				styledLine = lineNumStyle.Render(line)
+			case strings.HasPrefix(line, "+"):
+				// Additions
+				if len(line) > maxWidth {
+					line = line[:maxWidth-3] + "..."
+				}
+				styledLine = addStyle.Render(line)
+			case strings.HasPrefix(line, "-"):
+				// Deletions
+				if len(line) > maxWidth {
+					line = line[:maxWidth-3] + "..."
+				}
+				styledLine = removeStyle.Render(line)
 			case strings.HasPrefix(line, "diff --git"):
 				// Diff headers
-				styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("yellow")).Bold(true).Render(line)
+				if len(line) > maxWidth {
+					line = line[:maxWidth-3] + "..."
+				}
+				styledLine = diffHeaderStyle.Render(line)
 			default:
 				if len(line) > maxWidth {
 					line = line[:maxWidth-3] + "..."
@@ -2266,7 +2296,7 @@ func (m model) renderCommitDiff(width, height int) string {
 		// Show scroll indicator if there's more content
 		if endLine < len(lines) || startLine > 0 {
 			scrollInfo := fmt.Sprintf("[%d-%d/%d lines]", startLine+1, endLine, len(lines))
-			content = append(content, "", lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Render(scrollInfo))
+			content = append(content, "", lineNumStyle.Render(scrollInfo))
 		}
 	}
 
