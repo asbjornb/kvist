@@ -16,8 +16,9 @@ import (
 type panel int
 
 const (
-	topPanel    panel = iota // commits or files (based on mode)
-	bottomPanel              // details/diff
+	topPanel    panel = iota // commits, files, or workspaces (left panel in history mode)
+	middlePanel              // commit details (top-right panel in history mode only)
+	bottomPanel              // diff (bottom-right panel in history mode, bottom panel in files mode)
 )
 
 type viewMode int
@@ -825,7 +826,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 		case "tab":
-			m.activePanel = (m.activePanel + 1) % 2
+			if m.currentMode == historyMode {
+				// In history mode, cycle through 3 panels: top -> middle -> bottom -> top
+				m.activePanel = (m.activePanel + 1) % 3
+			} else {
+				// In other modes, cycle through 2 panels: top -> bottom -> top
+				if m.activePanel == topPanel {
+					m.activePanel = bottomPanel
+				} else {
+					m.activePanel = topPanel
+				}
+			}
 		case "up", "k":
 			switch m.activePanel {
 			case topPanel:
@@ -856,6 +867,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+			case middlePanel:
+				// Middle panel in history mode - could add scrolling for long commit messages later
+				// For now, no scrolling needed
 			case bottomPanel:
 				if (m.currentMode == filesMode || m.currentMode == historyMode) && m.diffScrollOffset > 0 {
 					m.diffScrollOffset--
@@ -895,6 +909,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+			case middlePanel:
+				// Middle panel in history mode - could add scrolling for long commit messages later
+				// For now, no scrolling needed
 			case bottomPanel:
 				if (m.currentMode == filesMode || m.currentMode == historyMode) && m.currentDiff != "" {
 					// Prevent scrolling beyond the content
@@ -1737,6 +1754,25 @@ func (m model) renderContent(height int) string {
 	}
 
 	// Content depends on current mode
+	if m.currentMode == historyMode {
+		// 3-panel layout for history mode: left (commits) | top-right (details) / bottom-right (diff)
+		leftWidth := m.width * 40 / 100      // 40% for commit list
+		rightWidth := m.width - leftWidth     // 60% for right side
+		rightTopHeight := height * 30 / 100   // 30% of total height for commit details
+		rightBottomHeight := height - rightTopHeight // 70% for diff
+
+		left := m.renderCommits(leftWidth, height)
+		topRight := m.renderCommitDetails(rightWidth, rightTopHeight)
+		bottomRight := m.renderCommitDiff(rightWidth, rightBottomHeight)
+
+		// Stack right panels vertically
+		rightSide := lipgloss.JoinVertical(lipgloss.Top, topRight, bottomRight)
+
+		// Join left and right horizontally
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, rightSide)
+	}
+
+	// 2-panel vertical layout for other modes
 	var top, bottom string
 	if m.currentMode == workspaceMode {
 		top = m.renderWorkspaces(m.width, topHeight)
@@ -1744,9 +1780,6 @@ func (m model) renderContent(height int) string {
 	} else if m.currentMode == workspaceManageMode {
 		top = m.renderWorkspaceManager(m.width, topHeight)
 		bottom = m.renderWorkspaceHelp(m.width, bottomHeight)
-	} else if m.currentMode == historyMode {
-		top = m.renderCommits(m.width, topHeight)
-		bottom = m.renderCommitDetails(m.width, bottomHeight)
 	} else { // filesMode
 		top = m.renderFiles(m.width, topHeight)
 		bottom = m.renderFileDiff(m.width, bottomHeight)
@@ -2108,7 +2141,7 @@ func (m model) renderCommitDetails(width, height int) string {
 		Height(height).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(func() string {
-			if m.activePanel == bottomPanel {
+			if m.activePanel == middlePanel {
 				return "170"
 			}
 			return "240"
@@ -2150,10 +2183,8 @@ func (m model) renderCommitDetails(width, height int) string {
 	if commit.Body != "" && strings.TrimSpace(commit.Body) != "" {
 		content = append(content, "", "Body:")
 		bodyLines := strings.Split(strings.TrimSpace(commit.Body), "\n")
-		// Limit body lines to save space for diff
-		maxBodyLines := 3
-		for i, line := range bodyLines {
-			if i >= maxBodyLines {
+		for _, line := range bodyLines {
+			if len(content) >= height-3 {
 				content = append(content, lipgloss.NewStyle().PaddingLeft(2).Render("..."))
 				break
 			}
@@ -2161,63 +2192,82 @@ func (m model) renderCommitDetails(width, height int) string {
 		}
 	}
 
-	// Add diff section
-	if m.currentDiff != "" {
-		content = append(content, "", lipgloss.NewStyle().Bold(true).Render("Changes:"))
+	return panelStyle.Render(strings.Join(content, "\n"))
+}
 
-		// Render diff with syntax highlighting
-		lines := strings.Split(m.currentDiff, "\n")
-		// Calculate how many lines we can show
-		headerLines := len(content)
-		maxDiffLines := height - headerLines - 4 // Leave some padding
+func (m model) renderCommitDiff(width, height int) string {
+	panelStyle := lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(func() string {
+			if m.activePanel == bottomPanel {
+				return "170"
+			}
+			return "240"
+		}()))
 
-		// Apply scroll offset
-		startLine := m.diffScrollOffset
-		endLine := startLine + maxDiffLines
-		if endLine > len(lines) {
-			endLine = len(lines)
-		}
-		if startLine < len(lines) {
-			for i := startLine; i < endLine; i++ {
-				line := lines[i]
-				var styledLine string
-				maxWidth := width - 6 // Account for padding and borders
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("170"))
 
-				// Syntax highlighting for diff
-				switch {
-				case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
-					// File headers
-					styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render(line)
-				case strings.HasPrefix(line, "+"):
-					// Additions
-					styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("green")).Render(line)
-				case strings.HasPrefix(line, "-"):
-					// Deletions
-					styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("red")).Render(line)
-				case strings.HasPrefix(line, "@@"):
-					// Hunk headers
-					styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("cyan")).Bold(true).Render(line)
-				case strings.HasPrefix(line, "diff --git"):
-					// Diff headers
-					styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("yellow")).Bold(true).Render(line)
-				default:
-					if len(line) > maxWidth {
-						line = line[:maxWidth-3] + "..."
-					}
-					styledLine = line
+	title := titleStyle.Render("Diff")
+	content := []string{title, ""}
+
+	if m.currentDiff == "" {
+		content = append(content, lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Render("  Loading diff..."))
+		return panelStyle.Render(strings.Join(content, "\n"))
+	}
+
+	// Render diff with syntax highlighting
+	lines := strings.Split(m.currentDiff, "\n")
+	maxDiffLines := height - 4 // Leave space for title and padding
+
+	// Apply scroll offset
+	startLine := m.diffScrollOffset
+	endLine := startLine + maxDiffLines
+	if endLine > len(lines) {
+		endLine = len(lines)
+	}
+
+	if startLine < len(lines) {
+		for i := startLine; i < endLine; i++ {
+			line := lines[i]
+			var styledLine string
+			maxWidth := width - 6 // Account for padding and borders
+
+			// Syntax highlighting for diff
+			switch {
+			case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
+				// File headers
+				styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render(line)
+			case strings.HasPrefix(line, "+"):
+				// Additions
+				styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("green")).Render(line)
+			case strings.HasPrefix(line, "-"):
+				// Deletions
+				styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("red")).Render(line)
+			case strings.HasPrefix(line, "@@"):
+				// Hunk headers
+				styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("cyan")).Bold(true).Render(line)
+			case strings.HasPrefix(line, "diff --git"):
+				// Diff headers
+				styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("yellow")).Bold(true).Render(line)
+			default:
+				if len(line) > maxWidth {
+					line = line[:maxWidth-3] + "..."
 				}
-
-				content = append(content, lipgloss.NewStyle().PaddingLeft(2).Render(styledLine))
+				styledLine = line
 			}
 
-			// Show scroll indicator if there's more content
-			if endLine < len(lines) {
-				scrollInfo := fmt.Sprintf("[%d/%d lines]", endLine, len(lines))
-				content = append(content, "", lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Render(scrollInfo))
-			}
+			content = append(content, lipgloss.NewStyle().PaddingLeft(2).Render(styledLine))
 		}
-	} else {
-		content = append(content, "", lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Render("  Loading diff..."))
+
+		// Show scroll indicator if there's more content
+		if endLine < len(lines) || startLine > 0 {
+			scrollInfo := fmt.Sprintf("[%d-%d/%d lines]", startLine+1, endLine, len(lines))
+			content = append(content, "", lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Render(scrollInfo))
+		}
 	}
 
 	return panelStyle.Render(strings.Join(content, "\n"))
