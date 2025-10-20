@@ -307,6 +307,16 @@ func loadDiff(repoPath string, filePath string, staged bool, isUntracked bool) t
 	}
 }
 
+func loadCommitDiff(repoPath string, commitHash string) tea.Cmd {
+	return func() tea.Msg {
+		diff, err := git.GetCommitDiff(repoPath, commitHash)
+		if err != nil {
+			return diffLoadedMsg{diff: "", err: err}
+		}
+		return diffLoadedMsg{diff: diff, err: nil}
+	}
+}
+
 func loadWorkspaceConfig() tea.Msg {
 	config, err := workspace.LoadConfig()
 	if err != nil {
@@ -830,6 +840,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else if m.currentMode == historyMode {
 					if m.selectedCommit > 0 {
 						m.selectedCommit--
+						m.diffScrollOffset = 0
+						if m.repo != nil && m.selectedCommit < len(m.commits) {
+							commit := m.commits[m.selectedCommit]
+							return m, loadCommitDiff(m.repo.Path, commit.Hash)
+						}
 					}
 				} else if m.currentMode == filesMode {
 					if m.selectedFile > 0 {
@@ -842,7 +857,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case bottomPanel:
-				if m.currentMode == filesMode && m.diffScrollOffset > 0 {
+				if (m.currentMode == filesMode || m.currentMode == historyMode) && m.diffScrollOffset > 0 {
 					m.diffScrollOffset--
 				}
 			}
@@ -864,6 +879,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else if m.currentMode == historyMode {
 					if m.selectedCommit < len(m.commits)-1 {
 						m.selectedCommit++
+						m.diffScrollOffset = 0
+						if m.repo != nil && m.selectedCommit < len(m.commits) {
+							commit := m.commits[m.selectedCommit]
+							return m, loadCommitDiff(m.repo.Path, commit.Hash)
+						}
 					}
 				} else if m.currentMode == filesMode {
 					if m.status != nil && m.selectedFile < len(m.status.Files)-1 {
@@ -876,7 +896,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			case bottomPanel:
-				if m.currentMode == filesMode && m.currentDiff != "" {
+				if (m.currentMode == filesMode || m.currentMode == historyMode) && m.currentDiff != "" {
 					// Prevent scrolling beyond the content
 					diffLines := strings.Split(m.currentDiff, "\n")
 					maxScroll := len(diffLines) - 10 // Keep some buffer
@@ -930,7 +950,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "h":
 			m.currentMode = historyMode
-			m.currentDiff = "" // Clear diff when switching to history mode
+			m.diffScrollOffset = 0
+			// Load diff for currently selected commit
+			if m.repo != nil && len(m.commits) > 0 && m.selectedCommit < len(m.commits) {
+				commit := m.commits[m.selectedCommit]
+				return m, loadCommitDiff(m.repo.Path, commit.Hash)
+			}
+			m.currentDiff = ""
 		case "s":
 			m.currentMode = filesMode
 			m.diffScrollOffset = 0 // Reset scroll when switching to files mode
@@ -2124,12 +2150,74 @@ func (m model) renderCommitDetails(width, height int) string {
 	if commit.Body != "" && strings.TrimSpace(commit.Body) != "" {
 		content = append(content, "", "Body:")
 		bodyLines := strings.Split(strings.TrimSpace(commit.Body), "\n")
-		for _, line := range bodyLines {
-			if len(content) >= height-3 {
+		// Limit body lines to save space for diff
+		maxBodyLines := 3
+		for i, line := range bodyLines {
+			if i >= maxBodyLines {
+				content = append(content, lipgloss.NewStyle().PaddingLeft(2).Render("..."))
 				break
 			}
 			content = append(content, lipgloss.NewStyle().PaddingLeft(2).Width(width-4).Render(line))
 		}
+	}
+
+	// Add diff section
+	if m.currentDiff != "" {
+		content = append(content, "", lipgloss.NewStyle().Bold(true).Render("Changes:"))
+
+		// Render diff with syntax highlighting
+		lines := strings.Split(m.currentDiff, "\n")
+		// Calculate how many lines we can show
+		headerLines := len(content)
+		maxDiffLines := height - headerLines - 4 // Leave some padding
+
+		// Apply scroll offset
+		startLine := m.diffScrollOffset
+		endLine := startLine + maxDiffLines
+		if endLine > len(lines) {
+			endLine = len(lines)
+		}
+		if startLine < len(lines) {
+			for i := startLine; i < endLine; i++ {
+				line := lines[i]
+				var styledLine string
+				maxWidth := width - 6 // Account for padding and borders
+
+				// Syntax highlighting for diff
+				switch {
+				case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
+					// File headers
+					styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true).Render(line)
+				case strings.HasPrefix(line, "+"):
+					// Additions
+					styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("green")).Render(line)
+				case strings.HasPrefix(line, "-"):
+					// Deletions
+					styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("red")).Render(line)
+				case strings.HasPrefix(line, "@@"):
+					// Hunk headers
+					styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("cyan")).Bold(true).Render(line)
+				case strings.HasPrefix(line, "diff --git"):
+					// Diff headers
+					styledLine = lipgloss.NewStyle().Foreground(lipgloss.Color("yellow")).Bold(true).Render(line)
+				default:
+					if len(line) > maxWidth {
+						line = line[:maxWidth-3] + "..."
+					}
+					styledLine = line
+				}
+
+				content = append(content, lipgloss.NewStyle().PaddingLeft(2).Render(styledLine))
+			}
+
+			// Show scroll indicator if there's more content
+			if endLine < len(lines) {
+				scrollInfo := fmt.Sprintf("[%d/%d lines]", endLine, len(lines))
+				content = append(content, "", lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Render(scrollInfo))
+			}
+		}
+	} else {
+		content = append(content, "", lipgloss.NewStyle().Foreground(lipgloss.Color("242")).Render("  Loading diff..."))
 	}
 
 	return panelStyle.Render(strings.Join(content, "\n"))
