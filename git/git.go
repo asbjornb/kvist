@@ -48,7 +48,10 @@ func OpenRepository(path string) (*Repository, error) {
 		return nil, err
 	}
 
-	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "rev-parse", "--show-toplevel")
 	cmd.Dir = absPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -67,7 +70,10 @@ func OpenRepository(path string) (*Repository, error) {
 }
 
 func getCurrentBranch(repoPath string) (string, error) {
-	cmd := exec.Command("git", "branch", "--show-current")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "branch", "--show-current")
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -85,7 +91,10 @@ func GetCommits(repoPath string, limit int) ([]Commit, error) {
 	// %x1e = RS between commits, %x00 between fields
 	const logFmt = "%H%x00%h%x00%an%x00%ae%x00%at%x00%s%x00%b%x00%x1e"
 
-	cmd := exec.Command("git", "log", fmt.Sprintf("--max-count=%d", limit), "--format="+logFmt)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "log", fmt.Sprintf("--max-count=%d", limit), "--format="+logFmt)
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -177,7 +186,10 @@ type Commit struct {
 }
 
 func GetBranches(repoPath string) ([]Branch, error) {
-	cmd := exec.Command("git", "branch", "-a")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "branch", "-a")
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -273,7 +285,10 @@ type Branch struct {
 
 func GetStatus(repoPath string) (*Status, error) {
 	// Use porcelain v2 with NUL-separated output for robust parsing
-	cmd := exec.Command("git", "status", "--porcelain=v2", "-z")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "status", "--porcelain=v2", "-z")
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -617,31 +632,46 @@ func UntrackedPatch(repoPath, rel string) (string, error) {
 }
 
 func StageFile(repoPath string, path string) error {
-	cmd := exec.Command("git", "add", path)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "add", path)
 	cmd.Dir = repoPath
 	return cmd.Run()
 }
 
 func UnstageFile(repoPath string, path string) error {
-	cmd := exec.Command("git", "reset", "HEAD", path)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "reset", "HEAD", path)
 	cmd.Dir = repoPath
 	return cmd.Run()
 }
 
 func CheckoutBranch(repoPath string, branch string) error {
-	cmd := exec.Command("git", "checkout", branch)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "checkout", branch)
 	cmd.Dir = repoPath
 	return cmd.Run()
 }
 
 func CreateBranch(repoPath string, branch string) error {
-	cmd := exec.Command("git", "checkout", "-b", branch)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "checkout", "-b", branch)
 	cmd.Dir = repoPath
 	return cmd.Run()
 }
 
 func GetRemotes(repoPath string) ([]Remote, error) {
-	cmd := exec.Command("git", "remote", "-v")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "remote", "-v")
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
@@ -696,7 +726,10 @@ type Remote struct {
 }
 
 func GetStashes(repoPath string) ([]Stash, error) {
-	cmd := exec.Command("git", "stash", "list", "--format=%gd%x00%gs%x00%gD")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "stash", "list", "--format=%gd%x00%gs%x00%gD")
 	cmd.Dir = repoPath
 	output, err := cmd.Output()
 	if err != nil {
