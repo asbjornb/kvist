@@ -1205,16 +1205,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Capture repo for closure
 			repo := m.repo
 			// Reload git status only (faster than full reload)
-			return m, tea.Batch(
-				func() tea.Msg {
-					status, err := git.GetStatus(repo.Path)
-					if err != nil {
-						return repoBasicsLoadedMsg{err: err}
-					}
-					return repoBasicsLoadedMsg{repo: repo, status: status}
-				},
-				autoRefreshCmd(), // Schedule next refresh
-			)
+			// Note: Don't schedule next refresh here - repoBasicsLoadedMsg handler will do it
+			return m, func() tea.Msg {
+				status, err := git.GetStatus(repo.Path)
+				if err != nil {
+					return repoBasicsLoadedMsg{err: err}
+				}
+				return repoBasicsLoadedMsg{repo: repo, status: status}
+			}
 		}
 		// If no repo loaded, don't schedule next refresh
 		return m, nil
