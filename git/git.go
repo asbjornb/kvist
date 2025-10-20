@@ -455,6 +455,14 @@ func GetDiff(repoPath string, path string, staged bool) (string, error) {
 	return runGitAllowExit1(repoPath, args...)
 }
 
+// GetCommitDiff returns the diff for a specific commit
+func GetCommitDiff(repoPath string, commitHash string) (string, error) {
+	// git show --no-ext-diff -U3 --format= <hash>
+	// --format= suppresses commit message (already shown in UI)
+	args := []string{"show", "--no-ext-diff", "-U3", "--format=", commitHash}
+	return runGitAllowExit1(repoPath, args...)
+}
+
 type Numstat struct {
 	Added   string // "-" means binary
 	Deleted string // "-" means binary
