@@ -1135,6 +1135,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case diffLoadedMsg:
 		if msg.err == nil {
 			m.currentDiff = msg.diff
+		} else {
+			// Show error in diff panel
+			m.currentDiff = fmt.Sprintf("Error loading diff: %v", msg.err)
 		}
 	case workspaceConfigMsg:
 		if msg.err != nil {
