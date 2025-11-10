@@ -277,6 +277,23 @@ func GetAheadBehind(repoPath string) (ahead, behind int, ok bool) {
 	return getAheadBehind(repoPath)
 }
 
+// GetAheadBehindBranch returns ahead/behind counts for the current branch vs a specific branch
+func GetAheadBehindBranch(repoPath string, targetBranch string) (ahead, behind int, ok bool) {
+	// Get ahead/behind counts
+	out, err := runGitAllowExit1(repoPath, "rev-list", "--left-right", "--count", targetBranch+"...HEAD")
+	if err != nil {
+		return 0, 0, false
+	}
+
+	parts := strings.Fields(strings.TrimSpace(out))
+	if len(parts) >= 2 {
+		behind, _ = strconv.Atoi(parts[0])
+		ahead, _ = strconv.Atoi(parts[1])
+		return ahead, behind, true
+	}
+	return 0, 0, false
+}
+
 type Branch struct {
 	Name      string
 	IsCurrent bool

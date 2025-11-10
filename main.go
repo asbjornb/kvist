@@ -840,6 +840,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activePanel = topPanel
 				}
 			}
+		case "shift+tab":
+			if m.currentMode == historyMode {
+				// In history mode, cycle backwards through 3 panels: top <- middle <- bottom <- top
+				m.activePanel = (m.activePanel + 2) % 3
+			} else {
+				// In other modes, cycle through 2 panels (same as tab since only 2 panels)
+				if m.activePanel == topPanel {
+					m.activePanel = bottomPanel
+				} else {
+					m.activePanel = topPanel
+				}
+			}
 		case "up", "k":
 			switch m.activePanel {
 			case topPanel:
@@ -1708,6 +1720,7 @@ func (m model) renderHeader() string {
 	mode := ""
 	if m.repo != nil {
 		branchName := m.repo.CurrentBranch
+		statusInfo := ""
 
 		// Add ahead/behind indicators if available
 		if m.branches != nil {
@@ -1724,16 +1737,40 @@ func (m model) renderHeader() string {
 						indicators += fmt.Sprintf("↓%d", branch.Behind)
 					}
 					if indicators != "" {
-						branchName += " " + indicators
+						statusInfo += " [origin: " + indicators + "]"
 					}
 					break
 				}
 			}
+
+			// Add ahead/behind vs main if not on main
+			if branchName != "main" && branchName != "master" {
+				ahead, behind, ok := git.GetAheadBehindBranch(m.repo.Path, "main")
+				if !ok {
+					// Try master if main doesn't exist
+					ahead, behind, ok = git.GetAheadBehindBranch(m.repo.Path, "master")
+				}
+				if ok && (ahead > 0 || behind > 0) {
+					mainIndicators := ""
+					if ahead > 0 {
+						mainIndicators += fmt.Sprintf("↑%d", ahead)
+					}
+					if behind > 0 {
+						if mainIndicators != "" {
+							mainIndicators += " "
+						}
+						mainIndicators += fmt.Sprintf("↓%d", behind)
+					}
+					if mainIndicators != "" {
+						statusInfo += " [main: " + mainIndicators + "]"
+					}
+				}
+			}
 		} else if m.loadingMetadata {
-			branchName += " (loading...)"
+			statusInfo = " (loading...)"
 		}
 
-		repo = fmt.Sprintf("📁 %s  🌿 %s", m.repo.Name, branchName)
+		repo = fmt.Sprintf("📁 %s  🌿 %s%s", m.repo.Name, branchName, statusInfo)
 		if m.currentMode == historyMode {
 			mode = "  [History Mode]"
 		} else {
