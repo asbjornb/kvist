@@ -106,6 +106,7 @@ func GetCommits(repoPath string, limit int) ([]Commit, error) {
 	commits := make([]Commit, 0, len(recs))
 
 	for _, r := range recs {
+		r = strings.TrimSpace(r)
 		if r == "" {
 			continue
 		}
