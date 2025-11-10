@@ -458,9 +458,10 @@ func GetDiff(repoPath string, path string, staged bool) (string, error) {
 
 // GetCommitDiff returns the diff for a specific commit
 func GetCommitDiff(repoPath string, commitHash string) (string, error) {
-	// git show --no-ext-diff -U3 --format= <hash>
+	// git show --no-ext-diff -U3 --format= --first-parent <hash>
 	// --format= suppresses commit message (already shown in UI)
-	args := []string{"show", "--no-ext-diff", "-U3", "--format=", commitHash}
+	// --first-parent shows diff against first parent for merge commits
+	args := []string{"show", "--no-ext-diff", "-U3", "--format=", "--first-parent", commitHash}
 	return runGitAllowExit1(repoPath, args...)
 }
 
