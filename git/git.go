@@ -106,6 +106,7 @@ func GetCommits(repoPath string, limit int) ([]Commit, error) {
 	commits := make([]Commit, 0, len(recs))
 
 	for _, r := range recs {
+		r = strings.TrimSpace(r)
 		if r == "" {
 			continue
 		}
@@ -452,6 +453,15 @@ func GetDiff(repoPath string, path string, staged bool) (string, error) {
 		args = append(args, "--", path)
 	}
 
+	return runGitAllowExit1(repoPath, args...)
+}
+
+// GetCommitDiff returns the diff for a specific commit
+func GetCommitDiff(repoPath string, commitHash string) (string, error) {
+	// git show --no-ext-diff -U3 --format= --first-parent <hash>
+	// --format= suppresses commit message (already shown in UI)
+	// --first-parent shows diff against first parent for merge commits
+	args := []string{"show", "--no-ext-diff", "-U3", "--format=", "--first-parent", commitHash}
 	return runGitAllowExit1(repoPath, args...)
 }
 

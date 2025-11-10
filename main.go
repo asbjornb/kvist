@@ -16,8 +16,9 @@ import (
 type panel int
 
 const (
-	topPanel    panel = iota // commits or files (based on mode)
-	bottomPanel              // details/diff
+	topPanel    panel = iota // commits, files, or workspaces (left panel in history mode)
+	middlePanel              // commit details (top-right panel in history mode only)
+	bottomPanel              // diff (bottom-right panel in history mode, bottom panel in files mode)
 )
 
 type viewMode int
@@ -303,6 +304,19 @@ func loadDiff(repoPath string, filePath string, staged bool, isUntracked bool) t
 			return diffLoadedMsg{diff: "", err: err}
 		}
 
+		return diffLoadedMsg{diff: diff, err: nil}
+	}
+}
+
+func loadCommitDiff(repoPath string, commitHash string) tea.Cmd {
+	return func() tea.Msg {
+		diff, err := git.GetCommitDiff(repoPath, commitHash)
+		if err != nil {
+			// Include git's output in the error message for debugging
+			errMsg := fmt.Sprintf("Commit: %s\nRepo: %s\nError: %v\nGit output: %s",
+				commitHash, repoPath, err, diff)
+			return diffLoadedMsg{diff: "", err: fmt.Errorf("%s", errMsg)}
+		}
 		return diffLoadedMsg{diff: diff, err: nil}
 	}
 }
@@ -815,7 +829,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c", "q":
 			return m, tea.Quit
 		case "tab":
-			m.activePanel = (m.activePanel + 1) % 2
+			if m.currentMode == historyMode {
+				// In history mode, cycle through 3 panels: top -> middle -> bottom -> top
+				m.activePanel = (m.activePanel + 1) % 3
+			} else {
+				// In other modes, cycle through 2 panels: top -> bottom -> top
+				if m.activePanel == topPanel {
+					m.activePanel = bottomPanel
+				} else {
+					m.activePanel = topPanel
+				}
+			}
 		case "up", "k":
 			switch m.activePanel {
 			case topPanel:
@@ -830,6 +854,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else if m.currentMode == historyMode {
 					if m.selectedCommit > 0 {
 						m.selectedCommit--
+						m.diffScrollOffset = 0
+						if m.repo != nil && m.selectedCommit < len(m.commits) {
+							commit := m.commits[m.selectedCommit]
+							return m, loadCommitDiff(m.repo.Path, commit.Hash)
+						}
 					}
 				} else if m.currentMode == filesMode {
 					if m.selectedFile > 0 {
@@ -841,8 +870,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+			case middlePanel:
+				// Middle panel in history mode - could add scrolling for long commit messages later
+				// For now, no scrolling needed
 			case bottomPanel:
-				if m.currentMode == filesMode && m.diffScrollOffset > 0 {
+				if (m.currentMode == filesMode || m.currentMode == historyMode) && m.diffScrollOffset > 0 {
 					m.diffScrollOffset--
 				}
 			}
@@ -864,6 +896,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else if m.currentMode == historyMode {
 					if m.selectedCommit < len(m.commits)-1 {
 						m.selectedCommit++
+						m.diffScrollOffset = 0
+						if m.repo != nil && m.selectedCommit < len(m.commits) {
+							commit := m.commits[m.selectedCommit]
+							return m, loadCommitDiff(m.repo.Path, commit.Hash)
+						}
 					}
 				} else if m.currentMode == filesMode {
 					if m.status != nil && m.selectedFile < len(m.status.Files)-1 {
@@ -875,8 +912,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+			case middlePanel:
+				// Middle panel in history mode - could add scrolling for long commit messages later
+				// For now, no scrolling needed
 			case bottomPanel:
-				if m.currentMode == filesMode && m.currentDiff != "" {
+				if (m.currentMode == filesMode || m.currentMode == historyMode) && m.currentDiff != "" {
 					// Prevent scrolling beyond the content
 					diffLines := strings.Split(m.currentDiff, "\n")
 					maxScroll := len(diffLines) - 10 // Keep some buffer
@@ -930,7 +970,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "h":
 			m.currentMode = historyMode
-			m.currentDiff = "" // Clear diff when switching to history mode
+			m.diffScrollOffset = 0
+			// Load diff for currently selected commit
+			if m.repo != nil && len(m.commits) > 0 && m.selectedCommit < len(m.commits) {
+				commit := m.commits[m.selectedCommit]
+				return m, loadCommitDiff(m.repo.Path, commit.Hash)
+			}
+			m.currentDiff = ""
 		case "s":
 			m.currentMode = filesMode
 			m.diffScrollOffset = 0 // Reset scroll when switching to files mode
@@ -1092,6 +1138,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case diffLoadedMsg:
 		if msg.err == nil {
 			m.currentDiff = msg.diff
+		} else {
+			// Show error in diff panel
+			m.currentDiff = fmt.Sprintf("Error loading diff: %v", msg.err)
 		}
 	case workspaceConfigMsg:
 		if msg.err != nil {
@@ -1711,6 +1760,25 @@ func (m model) renderContent(height int) string {
 	}
 
 	// Content depends on current mode
+	if m.currentMode == historyMode {
+		// 3-panel layout for history mode: left (commits) | top-right (details) / bottom-right (diff)
+		leftWidth := m.width * 40 / 100      // 40% for commit list
+		rightWidth := m.width - leftWidth     // 60% for right side
+		rightTopHeight := height * 30 / 100   // 30% of total height for commit details
+		rightBottomHeight := height - rightTopHeight // 70% for diff
+
+		left := m.renderCommits(leftWidth, height)
+		topRight := m.renderCommitDetails(rightWidth, rightTopHeight)
+		bottomRight := m.renderCommitDiff(rightWidth, rightBottomHeight)
+
+		// Stack right panels vertically
+		rightSide := lipgloss.JoinVertical(lipgloss.Top, topRight, bottomRight)
+
+		// Join left and right horizontally
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, rightSide)
+	}
+
+	// 2-panel vertical layout for other modes
 	var top, bottom string
 	if m.currentMode == workspaceMode {
 		top = m.renderWorkspaces(m.width, topHeight)
@@ -1718,9 +1786,6 @@ func (m model) renderContent(height int) string {
 	} else if m.currentMode == workspaceManageMode {
 		top = m.renderWorkspaceManager(m.width, topHeight)
 		bottom = m.renderWorkspaceHelp(m.width, bottomHeight)
-	} else if m.currentMode == historyMode {
-		top = m.renderCommits(m.width, topHeight)
-		bottom = m.renderCommitDetails(m.width, bottomHeight)
 	} else { // filesMode
 		top = m.renderFiles(m.width, topHeight)
 		bottom = m.renderFileDiff(m.width, bottomHeight)
@@ -2082,7 +2147,7 @@ func (m model) renderCommitDetails(width, height int) string {
 		Height(height).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(func() string {
-			if m.activePanel == bottomPanel {
+			if m.activePanel == middlePanel {
 				return "170"
 			}
 			return "240"
@@ -2126,9 +2191,118 @@ func (m model) renderCommitDetails(width, height int) string {
 		bodyLines := strings.Split(strings.TrimSpace(commit.Body), "\n")
 		for _, line := range bodyLines {
 			if len(content) >= height-3 {
+				content = append(content, lipgloss.NewStyle().PaddingLeft(2).Render("..."))
 				break
 			}
 			content = append(content, lipgloss.NewStyle().PaddingLeft(2).Width(width-4).Render(line))
+		}
+	}
+
+	return panelStyle.Render(strings.Join(content, "\n"))
+}
+
+func (m model) renderCommitDiff(width, height int) string {
+	panelStyle := lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(func() string {
+			if m.activePanel == bottomPanel {
+				return "170"
+			}
+			return "240"
+		}()))
+
+	titleStyle := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("170"))
+
+	addStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("42")) // Green
+
+	removeStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("196")) // Red
+
+	lineNumStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("242")) // Gray
+
+	headerStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("214")) // Orange
+
+	diffHeaderStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("226")).Bold(true) // Yellow
+
+	title := titleStyle.Render("Diff")
+	content := []string{title, ""}
+
+	if m.currentDiff == "" {
+		content = append(content, lineNumStyle.Render("  Loading diff..."))
+		return panelStyle.Render(strings.Join(content, "\n"))
+	}
+
+	// Render diff with syntax highlighting
+	lines := strings.Split(m.currentDiff, "\n")
+	maxDiffLines := height - 4 // Leave space for title and padding
+
+	// Apply scroll offset
+	startLine := m.diffScrollOffset
+	endLine := startLine + maxDiffLines
+	if endLine > len(lines) {
+		endLine = len(lines)
+	}
+
+	if startLine < len(lines) {
+		for i := startLine; i < endLine; i++ {
+			line := lines[i]
+			var styledLine string
+			maxWidth := width - 6 // Account for padding and borders
+
+			// Syntax highlighting for diff
+			switch {
+			case strings.HasPrefix(line, "+++") || strings.HasPrefix(line, "---"):
+				// File headers
+				if len(line) > maxWidth {
+					line = line[:maxWidth-3] + "..."
+				}
+				styledLine = headerStyle.Render(line)
+			case strings.HasPrefix(line, "@@"):
+				// Hunk headers
+				if len(line) > maxWidth {
+					line = line[:maxWidth-3] + "..."
+				}
+				styledLine = lineNumStyle.Render(line)
+			case strings.HasPrefix(line, "+"):
+				// Additions
+				if len(line) > maxWidth {
+					line = line[:maxWidth-3] + "..."
+				}
+				styledLine = addStyle.Render(line)
+			case strings.HasPrefix(line, "-"):
+				// Deletions
+				if len(line) > maxWidth {
+					line = line[:maxWidth-3] + "..."
+				}
+				styledLine = removeStyle.Render(line)
+			case strings.HasPrefix(line, "diff --git"):
+				// Diff headers
+				if len(line) > maxWidth {
+					line = line[:maxWidth-3] + "..."
+				}
+				styledLine = diffHeaderStyle.Render(line)
+			default:
+				if len(line) > maxWidth {
+					line = line[:maxWidth-3] + "..."
+				}
+				styledLine = line
+			}
+
+			content = append(content, lipgloss.NewStyle().PaddingLeft(2).Render(styledLine))
+		}
+
+		// Show scroll indicator if there's more content
+		if endLine < len(lines) || startLine > 0 {
+			scrollInfo := fmt.Sprintf("[%d-%d/%d lines]", startLine+1, endLine, len(lines))
+			content = append(content, "", lineNumStyle.Render(scrollInfo))
 		}
 	}
 
