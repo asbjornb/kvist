@@ -694,6 +694,28 @@ func CreateBranch(repoPath string, branch string) error {
 	return cmd.Run()
 }
 
+func DeleteBranch(repoPath string, branch string, force bool) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	flag := "-d"
+	if force {
+		flag = "-D"
+	}
+	cmd := exec.CommandContext(ctx, "git", "branch", flag, branch)
+	cmd.Dir = repoPath
+	return cmd.Run()
+}
+
+func DeleteRemoteBranch(repoPath string, remote string, branch string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "push", remote, "--delete", branch)
+	cmd.Dir = repoPath
+	return cmd.Run()
+}
+
 func GetRemotes(repoPath string) ([]Remote, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
