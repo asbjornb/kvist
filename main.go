@@ -60,6 +60,10 @@ type model struct {
 	creatingBranch     bool
 	branchInput        string
 	selectedBranchMenu int
+	deletingBranch     bool
+	branchToDelete     string
+	deleteRemote       bool
+	deleteRemotePrompt bool
 	// Diff view state
 	currentDiff      string
 	diffScrollOffset int
@@ -229,6 +233,32 @@ func doBranchOperation(repoPath string, branch string, operation string) tea.Cmd
 			err = git.CreateBranch(repoPath, branch)
 		}
 		return branchOperationMsg{operation: operation, branch: branch, err: err}
+	}
+}
+
+type deleteBranchMsg struct {
+	branch       string
+	deleteRemote bool
+	err          error
+}
+
+func deleteBranchCmd(repoPath string, branch string, force bool, deleteRemote bool) tea.Cmd {
+	return func() tea.Msg {
+		// Delete local branch
+		err := git.DeleteBranch(repoPath, branch, force)
+		if err != nil {
+			return deleteBranchMsg{branch: branch, deleteRemote: deleteRemote, err: err}
+		}
+
+		// Delete remote branch if requested
+		if deleteRemote {
+			err = git.DeleteRemoteBranch(repoPath, "origin", branch)
+			if err != nil {
+				return deleteBranchMsg{branch: branch, deleteRemote: deleteRemote, err: fmt.Errorf("local branch deleted, but remote deletion failed: %w", err)}
+			}
+		}
+
+		return deleteBranchMsg{branch: branch, deleteRemote: deleteRemote, err: nil}
 	}
 }
 
@@ -476,6 +506,45 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						}
 					}
 				}
+			case "d":
+				// Delete branch
+				if m.selectedBranchMenu > 0 { // Can't delete the "Create new branch" option
+					branchIndex := m.selectedBranchMenu - 1
+					if branchIndex < len(m.branches) {
+						branch := m.branches[branchIndex]
+						if !branch.IsCurrent && m.repo != nil {
+							m.branchToDelete = branch.Name
+							m.showingBranchMenu = false
+
+							// Check if branch exists on remote
+							hasRemote := false
+							if m.refs != nil {
+								for _, refs := range m.refs {
+									for _, ref := range refs {
+										if ref == "origin/"+branch.Name {
+											hasRemote = true
+											break
+										}
+									}
+									if hasRemote {
+										break
+									}
+								}
+							}
+
+							if hasRemote {
+								// Prompt for remote deletion
+								m.deleteRemotePrompt = true
+								m.deleteRemote = true // Default to yes
+							} else {
+								// No remote, delete local immediately
+								m.deletingBranch = true
+								m.deleteRemote = false
+								return m, deleteBranchCmd(m.repo.Path, branch.Name, false, false)
+							}
+						}
+					}
+				}
 			}
 			return m, nil
 		}
@@ -502,6 +571,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(msg.String()) == 1 && msg.String()[0] >= 32 && msg.String()[0] <= 126 {
 					m.branchInput += msg.String()
 				}
+			}
+			return m, nil
+		}
+
+		// Handle delete branch prompt
+		if m.deleteRemotePrompt {
+			switch msg.String() {
+			case "ctrl+c", "esc":
+				m.deleteRemotePrompt = false
+				m.branchToDelete = ""
+			case "y", "enter":
+				// Yes - delete both local and remote
+				m.deleteRemotePrompt = false
+				m.deletingBranch = true
+				if m.repo != nil {
+					return m, deleteBranchCmd(m.repo.Path, m.branchToDelete, false, true)
+				}
+			case "n":
+				// No - delete only local
+				m.deleteRemotePrompt = false
+				m.deletingBranch = true
+				if m.repo != nil {
+					return m, deleteBranchCmd(m.repo.Path, m.branchToDelete, false, false)
+				}
+			case "tab", "left", "right":
+				// Toggle between yes/no
+				m.deleteRemote = !m.deleteRemote
 			}
 			return m, nil
 		}
@@ -1320,6 +1416,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, loadRepositoryIncremental(repoPath)
 		}
+	case deleteBranchMsg:
+		m.deletingBranch = false
+		m.branchToDelete = ""
+		if msg.err == nil {
+			// Successfully deleted - refresh repository
+			m.loadingRepo = true
+			m.loadingMetadata = true
+			repoPath := "."
+			if m.repo != nil {
+				repoPath = m.repo.Path
+			}
+			return m, loadRepositoryIncremental(repoPath)
+		} else {
+			// Show error
+			m.err = fmt.Errorf("failed to delete branch %s: %w", msg.branch, msg.err)
+		}
 	}
 	return m, nil
 }
@@ -1478,6 +1590,43 @@ func (m model) View() string {
 				strings.Repeat("\n", overlayTop)+overlay)
 	}
 
+	// Show delete branch confirmation prompt
+	if m.deleteRemotePrompt {
+		promptStyle := lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("170")).
+			Background(lipgloss.Color("235")).
+			Padding(1).
+			Margin(1)
+
+		yesStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("170")).
+			Bold(true)
+		noStyle := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("241"))
+
+		if !m.deleteRemote {
+			yesStyle, noStyle = noStyle, yesStyle
+		}
+
+		question := fmt.Sprintf("Delete branch '%s'", m.branchToDelete)
+		prompt := fmt.Sprintf("Also delete from remote (origin)?")
+		options := fmt.Sprintf("%s  %s",
+			yesStyle.Render("[Yes]"),
+			noStyle.Render("[No]"))
+		promptHelp := "Tab: toggle • Y/Enter: yes • N: no • Esc: cancel"
+
+		overlay := promptStyle.Render(question + "\n" + prompt + "\n\n" + options + "\n\n" + promptHelp)
+
+		// Position overlay in center
+		overlayHeight := 9
+		overlayTop := (m.height - overlayHeight) / 2
+
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top, result) +
+			lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Top,
+				strings.Repeat("\n", overlayTop)+overlay)
+	}
+
 	// Show modal overlay
 	if m.showingModal {
 		return m.renderModalOverlay(result)
@@ -1555,7 +1704,7 @@ func (m model) renderBranchMenuOverlay(background string) string {
 		content = append(content, style.Render(prefix+branchName))
 	}
 
-	content = append(content, "", "↑↓/jk: navigate • Enter: select • Esc: cancel")
+	content = append(content, "", "↑↓/jk: navigate • Enter: select • d: delete • Esc: cancel")
 
 	menu := menuStyle.Render(strings.Join(content, "\n"))
 
