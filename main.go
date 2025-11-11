@@ -1435,7 +1435,7 @@ func (m model) View() string {
 	}
 
 	headerHeight := 3
-	helpHeight := 4
+	helpHeight := 5  // Increased to accommodate status line
 	contentHeight := m.height - headerHeight - helpHeight
 
 	header := m.renderHeader()
@@ -2351,6 +2351,11 @@ func (m model) renderHelp() string {
 		Foreground(lipgloss.Color("241")).
 		MarginLeft(2)
 
+	statusStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("214")).
+		Bold(true).
+		MarginLeft(2)
+
 	var helpLines []string
 	if m.width < 80 {
 		// Compact help for narrow terminals
@@ -2363,6 +2368,62 @@ func (m model) renderHelp() string {
 			"tab: switch panel • ↑↓/jk: navigate • space/enter: stage/checkout",
 			"w: workspace/manage • h: history mode • s: files mode • b: branches • f: fetch • p: pull • P: push • r: refresh • q: quit",
 		}
+	}
+
+	// Add branch status line if we have a repo loaded
+	var statusLine string
+	if m.repo != nil {
+		branchName := m.repo.CurrentBranch
+		statusInfo := ""
+
+		// Add ahead/behind indicators if available
+		if m.branches != nil {
+			for _, branch := range m.branches {
+				if branch.IsCurrent && (branch.Ahead > 0 || branch.Behind > 0) {
+					indicators := ""
+					if branch.Ahead > 0 {
+						indicators += fmt.Sprintf("↑%d", branch.Ahead)
+					}
+					if branch.Behind > 0 {
+						if indicators != "" {
+							indicators += " "
+						}
+						indicators += fmt.Sprintf("↓%d", branch.Behind)
+					}
+					if indicators != "" {
+						statusInfo += " [origin: " + indicators + "]"
+					}
+					break
+				}
+			}
+
+			// Add ahead/behind vs main if not on main
+			if branchName != "main" && branchName != "master" {
+				ahead, behind, ok := git.GetAheadBehindBranch(m.repo.Path, "main")
+				if !ok {
+					// Try master if main doesn't exist
+					ahead, behind, ok = git.GetAheadBehindBranch(m.repo.Path, "master")
+				}
+				if ok && (ahead > 0 || behind > 0) {
+					mainIndicators := ""
+					if ahead > 0 {
+						mainIndicators += fmt.Sprintf("↑%d", ahead)
+					}
+					if behind > 0 {
+						if mainIndicators != "" {
+							mainIndicators += " "
+						}
+						mainIndicators += fmt.Sprintf("↓%d", behind)
+					}
+					if mainIndicators != "" {
+						statusInfo += " [main: " + mainIndicators + "]"
+					}
+				}
+			}
+		}
+
+		statusLine = statusStyle.Render(fmt.Sprintf("📁 %s  🌿 %s%s", m.repo.Name, branchName, statusInfo))
+		return lipgloss.JoinVertical(lipgloss.Top, statusLine, helpStyle.Render(strings.Join(helpLines, "\n")))
 	}
 
 	return helpStyle.Render(strings.Join(helpLines, "\n"))
