@@ -789,3 +789,78 @@ type Stash struct {
 	Message string
 	Date    string
 }
+
+// GetRefs returns a map of commit SHA -> list of ref names (branches, remotes, HEAD)
+func GetRefs(repoPath string) (map[string][]string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", "show-ref", "--heads", "--tags", "-d")
+	cmd.Dir = repoPath
+	output, err := cmd.Output()
+	if err != nil {
+		// show-ref fails if there are no refs, which is OK
+		return make(map[string][]string), nil
+	}
+
+	refs := make(map[string][]string)
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			sha := parts[0]
+			refName := parts[1]
+
+			// Parse ref name to get friendly name
+			var friendlyName string
+			if strings.HasPrefix(refName, "refs/heads/") {
+				friendlyName = strings.TrimPrefix(refName, "refs/heads/")
+			} else if strings.HasPrefix(refName, "refs/tags/") {
+				friendlyName = strings.TrimPrefix(refName, "refs/tags/")
+			} else {
+				friendlyName = refName
+			}
+
+			refs[sha] = append(refs[sha], friendlyName)
+		}
+	}
+
+	// Also get remote refs
+	cmd = exec.CommandContext(ctx, "git", "show-ref")
+	cmd.Dir = repoPath
+	output, err = cmd.Output()
+	if err != nil {
+		return refs, nil // Return what we have so far
+	}
+
+	lines = strings.Split(string(output), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		parts := strings.Fields(line)
+		if len(parts) >= 2 {
+			sha := parts[0]
+			refName := parts[1]
+
+			// Only process remote refs
+			if strings.HasPrefix(refName, "refs/remotes/") {
+				friendlyName := strings.TrimPrefix(refName, "refs/remotes/")
+				// Skip HEAD pointer
+				if !strings.HasSuffix(friendlyName, "/HEAD") {
+					refs[sha] = append(refs[sha], friendlyName)
+				}
+			}
+		}
+	}
+
+	return refs, nil
+}

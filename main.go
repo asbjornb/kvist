@@ -48,6 +48,7 @@ type model struct {
 	status         *git.Status
 	remotes        []git.Remote
 	stashes        []git.Stash
+	refs           map[string][]string // commit SHA -> list of ref names
 	activePanel    panel
 	currentMode    viewMode
 	selectedCommit int
@@ -115,6 +116,7 @@ type repoLoadedMsg struct {
 	status   *git.Status
 	remotes  []git.Remote
 	stashes  []git.Stash
+	refs     map[string][]string
 	err      error
 }
 
@@ -130,6 +132,7 @@ type repoMetadataLoadedMsg struct {
 	branches []git.Branch
 	remotes  []git.Remote
 	stashes  []git.Stash
+	refs     map[string][]string
 	err      error
 }
 
@@ -167,12 +170,14 @@ func loadRepositoryMetadata(path string) tea.Cmd {
 		branches, _ := git.GetBranches(path)
 		remotes, _ := git.GetRemotes(path)
 		stashes, _ := git.GetStashes(path)
+		refs, _ := git.GetRefs(path)
 
 		return repoMetadataLoadedMsg{
 			commits:  commits,
 			branches: branches,
 			remotes:  remotes,
 			stashes:  stashes,
+			refs:     refs,
 		}
 	}
 }
@@ -1147,6 +1152,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.branches = msg.branches
 		m.remotes = msg.remotes
 		m.stashes = msg.stashes
+		m.refs = msg.refs
 	case diffLoadedMsg:
 		if msg.err == nil {
 			m.currentDiff = msg.diff
@@ -1889,8 +1895,65 @@ func (m model) renderCommits(width, height int) string {
 		relativeTime := git.FormatRelativeTime(commit.Time)
 		timeText := timeStyle.Render(relativeTime)
 
+		// Add ref labels if this commit has any
+		refLabels := ""
+		if m.refs != nil {
+			if refs, ok := m.refs[commit.Hash]; ok && len(refs) > 0 {
+				refStyle := lipgloss.NewStyle().
+					Foreground(lipgloss.Color("228")).
+					Bold(true)
+
+				// Prioritize showing HEAD first, then current branch, then remotes
+				sortedRefs := make([]string, 0, len(refs))
+				var headRef string
+				currentBranch := ""
+				if m.repo != nil {
+					currentBranch = m.repo.CurrentBranch
+				}
+
+				// Check for HEAD marker
+				for _, ref := range refs {
+					if ref == currentBranch {
+						headRef = "HEAD -> " + ref
+						break
+					}
+				}
+
+				// Add HEAD marker if found
+				if headRef != "" {
+					sortedRefs = append(sortedRefs, headRef)
+				}
+
+				// Add other refs (excluding current branch if already shown as HEAD)
+				for _, ref := range refs {
+					if ref != currentBranch {
+						sortedRefs = append(sortedRefs, ref)
+					}
+				}
+
+				if len(sortedRefs) > 0 {
+					refLabels = " " + refStyle.Render("("+strings.Join(sortedRefs, ", ")+")")
+				}
+			}
+		}
+
 		// Calculate available space for subject
-		prefixLen := len(commit.ShortHash) + len(relativeTime) + 4 // spaces and separators
+		refLabelsLen := len(lipgloss.NewStyle().Render(refLabels)) // Strip ANSI codes for length calculation
+		if refLabels != "" {
+			// Rough estimate: count visible characters only
+			refLabelsLen = 0
+			inEscape := false
+			for _, r := range refLabels {
+				if r == '\x1b' {
+					inEscape = true
+				} else if inEscape && r == 'm' {
+					inEscape = false
+				} else if !inEscape {
+					refLabelsLen++
+				}
+			}
+		}
+		prefixLen := len(commit.ShortHash) + len(relativeTime) + refLabelsLen + 4 // spaces and separators
 		maxSubjectLen := width - prefixLen - 4
 
 		subject := commit.Subject
@@ -1898,7 +1961,7 @@ func (m model) renderCommits(width, height int) string {
 			subject = subject[:maxSubjectLen-3] + "..."
 		}
 
-		line := fmt.Sprintf("%s %s %s", hash, timeText, subject)
+		line := fmt.Sprintf("%s%s %s %s", hash, refLabels, timeText, subject)
 		content = append(content, style.Width(width-2).Render(line))
 	}
 
